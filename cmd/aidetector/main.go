@@ -18,9 +18,11 @@ import (
 
 	"github.com/joeshirey/AIDetector/internal/calibrate"
 	"github.com/joeshirey/AIDetector/internal/detect"
+	"github.com/joeshirey/AIDetector/internal/detect/ngram"
 	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/eval"
 	"github.com/joeshirey/AIDetector/internal/mcpserver"
+	"github.com/joeshirey/AIDetector/internal/split"
 )
 
 func main() {
@@ -185,19 +187,55 @@ func runFit(args []string) error {
 	if err != nil {
 		return err
 	}
+	docs := make([]string, len(r.Samples))
+	labels := make([]bool, len(r.Samples))
+	for i, s := range r.Samples {
+		b, err := os.ReadFile(s.Path)
+		if err != nil {
+			return err
+		}
+		docs[i], labels[i] = string(b), s.IsAI
+	}
+
+	// Word-pattern scores for the calibration step come from 5-fold
+	// out-of-fold models, so the calibrator sees how the classifier does on
+	// text it wasn't trained on rather than its overconfident training fit.
+	const folds = 5
+	oof := make([]float64, len(docs))
+	for f := range folds {
+		var trDocs []string
+		var trLabels []bool
+		for i, s := range r.Samples {
+			if fold(s.ID, folds) != f {
+				trDocs, trLabels = append(trDocs, docs[i]), append(trLabels, labels[i])
+			}
+		}
+		fm := ngram.Train(string(k), trDocs, trLabels, ngram.DefaultTrainOptions())
+		for i, s := range r.Samples {
+			if fold(s.ID, folds) == f {
+				oof[i], _ = fm.Logit(docs[i])
+			}
+		}
+	}
+	words := ngram.Train(string(k), docs, labels, ngram.DefaultTrainOptions())
+
 	rows := make([]calibrate.Row, len(r.Samples))
 	for i, s := range r.Samples {
-		rows[i] = calibrate.Row{Feats: s.Feats, Words: s.Words, IsAI: s.IsAI}
+		feats := map[string]float64{"word_patterns": oof[i]}
+		for n, v := range s.Feats {
+			feats[n] = v
+		}
+		rows[i] = calibrate.Row{Feats: feats, Words: s.Words, IsAI: s.IsAI}
 	}
 	m := calibrate.Fit(string(k), rows)
-	b, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
 	path := *out + "/" + string(k) + ".json"
-	if err := os.WriteFile(path, append(b, '\n'), 0o644); err != nil {
+	if err := writeJSON(path, m); err != nil {
 		return err
 	}
+	if err := writeJSON(*out+"/"+string(k)+".ngram.json", words); err != nil {
+		return err
+	}
+	fmt.Printf("word-pattern model: %d terms\n", len(words.Weights))
 	fmt.Printf("fit %s on %d train samples (%d human, %d ai) -> %s\n", k, len(rows), r.Human, r.AI, path)
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "FEATURE\tWEIGHT\tIF MISSING")
@@ -207,6 +245,20 @@ func runFit(args []string) error {
 	tw.Flush()
 	fmt.Println("\nrebuild, then check held-out accuracy with: aidetector eval -split test", strings.Join(fs.Args(), " "))
 	return nil
+}
+
+// fold assigns a sample to one of n cross-validation folds by id, so a human
+// text and its AI mirror always land in the same fold.
+func fold(id string, n int) int {
+	return int(split.Hash(id) / 5 % uint32(n))
+}
+
+func writeJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", " ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o644)
 }
 
 func printJSON(v any) error {

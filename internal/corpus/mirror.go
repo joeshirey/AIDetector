@@ -11,10 +11,16 @@ import (
 	"time"
 
 	"github.com/joeshirey/AIDetector/internal/split"
+	"github.com/joeshirey/AIDetector/internal/text"
 )
 
 // Prompt templates, phrased the varied ways people actually ask. {placeholders}
 // are filled from the sample's context.
+//
+// These must ask for the artifact plainly. Instructions to sound human, avoid
+// AI tells, or "humanize" would make the AI side unrepresentative of normal
+// use; adversarial variants belong in a separate set that is never trained on.
+// checkPrompts enforces this.
 var writePrompts = map[string][]string{
 	"commit": {
 		"Write a git commit message for this diff. Reply with only the commit message.\n\n```diff\n{diff}\n```",
@@ -45,6 +51,24 @@ var briefPrompts = map[string]string{
 	"memo": "Read this work email and write a brief for it: who it's addressed to (names and roles), its purpose, the key facts and requests in order, and the tone. Don't quote it.\n\n<email>\n{text}\n</email>",
 }
 
+var evasionRE = regexp.MustCompile(`(?i)humaniz|sounds? (?:more )?human|like a human|natural-sounding|undetect|ai detect|avoid (?:ai|em dash|dashes)|signs of ai|ai tells|written by (?:a person|a human)`)
+
+func checkPrompts() error {
+	all := []string{}
+	for _, ps := range writePrompts {
+		all = append(all, ps...)
+	}
+	for _, p := range briefPrompts {
+		all = append(all, p)
+	}
+	for _, p := range all {
+		if m := evasionRE.FindString(p); m != "" {
+			return fmt.Errorf("generation prompt contains detector-evasion wording %q; mirrors must reflect normal use", m)
+		}
+	}
+	return nil
+}
+
 var placeholderRE = regexp.MustCompile(`\{(\w+)\}`)
 
 func fill(tmpl string, vars map[string]string) string {
@@ -66,6 +90,9 @@ type MirrorOptions struct {
 // Mirror writes one AI counterpart for every human sample that lacks one.
 // It is safe to re-run: existing mirrors are skipped.
 func (s *Store) Mirror(ctx context.Context, o MirrorOptions) error {
+	if err := checkPrompts(); err != nil {
+		return err
+	}
 	sources, err := s.Sources(o.Kind)
 	if err != nil {
 		return err
@@ -163,11 +190,11 @@ func clean(kind, out, title string) string {
 	}
 	switch kind {
 	case "commit":
-		out = NormalizeCommit(out)
+		out = text.Normalize(kind, NormalizeCommit(out))
 	case "pr":
-		out = NormalizePR(out)
+		out = text.Normalize(kind, NormalizePR(out))
 	case "memo":
-		out = stripMarkdown(subjectRE.ReplaceAllString(out, ""))
+		out = text.Normalize(kind, stripMarkdown(subjectRE.ReplaceAllString(out, "")))
 	case "blog":
 		// Human posts don't include their title, so drop a leading heading.
 		if first, rest, ok := strings.Cut(out, "\n"); ok && strings.HasPrefix(first, "#") {
