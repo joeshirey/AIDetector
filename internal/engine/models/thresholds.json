@@ -1,0 +1,27 @@
+{
+ "commit": {
+  "mixed": 65,
+  "likely_ai": 83,
+  "ai": 86,
+  "human_at_mixed": 0.03900709219858156,
+  "human_at_likely_ai": 0.0070921985815602835,
+  "calibrated_on": 318
+ },
+ "pr": {
+  "mixed": 41,
+  "likely_ai": 64,
+  "ai": 78,
+  "human_at_mixed": 0.07006369426751592,
+  "human_at_likely_ai": 0.01910828025477707,
+  "calibrated_on": 143
+ },
+ "prose": {
+  "mixed": 14,
+  "likely_ai": 44,
+  "ai": 56,
+  "human_at_mixed": 0.11318553092182031,
+  "human_at_likely_ai": 0.021003500583430573,
+  "human_at_ai": 0.008168028004667444,
+  "calibrated_on": 943
+ }
+}

@@ -23,7 +23,24 @@ claude mcp add --scope user aidetector -- "$PWD/bin/aidetector-mcp"
 | `detect_ai_file` | Score a local `.txt`/`.md` file. |
 | `detect_ai_commits` | Score commit messages in a repo range (e.g. `main..HEAD`). |
 
-Each result includes `score`, `label`, `confidence`, ranked `reasons` (each
+Scores share one scale across text kinds. Each kind's raw model score is mapped
+so its calibrated cutoffs land at 40, 60, and 80 (`aidetector thresholds`, using
+half of a fresh human pool to set cutoffs and the other half to check them):
+
+| Score | Label | Meaning |
+|---|---|---|
+| 80–100 | AI | ~0.5% of held-out human text of this kind scores this high |
+| 60–79 | likely AI | ~2% of human text reaches 60 |
+| 40–59 | mixed (possibly AI-assisted) | ~10% of human text reaches 40 |
+| 20–39 | likely human | |
+| 0–19 | human | |
+
+On the eval-only sets, 94% of AI prose is labeled likely AI or AI, and so is
+85–99% of humanizer-rewritten AI prose. AI-polished human prose is split: 17–32%
+lands in "mixed" and 43–60% in "AI," because a full polish changes most of the
+wording. Treat "mixed" as a hint, not a verdict.
+
+Each result includes `score`, `raw_score`, `label`, `confidence`, ranked `reasons` (each
 with a direction, an impact level, its contribution to the fitted score, and the
 typical human and AI values from the training corpus), the raw `signals`, and,
 for long prose, per-segment scores plus `ai_fraction`. Before scoring, text is
@@ -171,7 +188,12 @@ bin/aidetector fit -kind prose corpus/blog corpus/memo corpus/essay
 go build -o bin/aidetector ./cmd/aidetector       # embeds internal/engine/models/*.json
 bin/aidetector eval -split test -kind commit corpus/commit
 bin/aidetector eval -split test -kind commit -heuristic corpus/commit   # compare to hand-set weights
+bin/aidetector thresholds -kind prose corpus_fresh/blog/pool corpus_fresh/memo/pool corpus_fresh/essay/pool
+go build -o bin/aidetector ./cmd/aidetector       # embeds the new cutoffs
 ```
+
+Re-run `thresholds` after every refit, on human text the models never trained
+on (`corpus harvest -pool -out corpus_fresh -exclude corpus`).
 
 ## Ideas adopted from "Forensics for AI Generated Text"
 

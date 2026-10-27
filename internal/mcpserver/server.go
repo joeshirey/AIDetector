@@ -54,7 +54,9 @@ func New(e *engine.Engine, version string) *mcp.Server {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "detect_ai_text",
 		Description: "Score how likely text is to be AI-written, 0 (human) to 100 (AI). " +
-			"Returns the score, a label, a confidence level, the signals behind it, and per-segment scores for long documents. " +
+			"Scores share one scale across text kinds: 40+ is mixed (possibly AI-assisted), 60+ likely AI, 80+ AI, " +
+			"set so that roughly 10%, 2%, and 0.5% of held-out human writing of the same kind reaches each. " +
+			"Returns the score, a label, a confidence level, ranked reasons, and per-segment scores for long documents. " +
 			"Works best on 150+ words of English prose; short texts get low confidence.",
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, a textArgs) (*mcp.CallToolResult, engine.Result, error) {
 		res, err := e.Analyze(ctx, detect.Input{Text: a.Text, Kind: detect.ParseKind(a.Kind)})

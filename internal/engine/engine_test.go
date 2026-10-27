@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"math"
 	"os"
 	"testing"
 
@@ -114,5 +115,17 @@ func TestTamperingWarning(t *testing.T) {
 	}
 	if len(res.Reasons) == 0 || res.Reasons[0].Direction != "warning" {
 		t.Errorf("want a leading warning reason, got %+v", res.Reasons)
+	}
+}
+
+func TestScale(t *testing.T) {
+	th := Thresholds{Mixed: 14, LikelyAI: 44, AI: 56}
+	for _, c := range []struct{ raw, want float64 }{{0, 0}, {14, 40}, {44, 60}, {56, 80}, {100, 100}, {29, 50}} {
+		if got := th.Scale(c.raw); math.Abs(got-c.want) > 1e-9 {
+			t.Errorf("Scale(%v) = %v, want %v", c.raw, got, c.want)
+		}
+	}
+	if DefaultThresholds.Scale(37) != 37 {
+		t.Error("default thresholds should be the identity")
 	}
 }

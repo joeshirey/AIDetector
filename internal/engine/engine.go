@@ -23,15 +23,17 @@ import (
 
 // Result is what the CLI and MCP tools return.
 type Result struct {
-	Score      int             `json:"score" jsonschema:"0-100, higher means more likely AI-written"`
-	Label      string          `json:"label"`
+	Score      int             `json:"score" jsonschema:"0-100 on a scale shared by all kinds: 40+ mixed, 60+ likely AI, 80+ AI; at most ~10%, ~2%, and ~0.5% of held-out human text of the same kind reaches each"`
+	RawScore   int             `json:"raw_score" jsonschema:"the model's own 0-100 probability before mapping onto the shared scale"`
+	Label      string          `json:"label" jsonschema:"human, likely human, mixed (possibly AI-assisted), likely AI, or AI"`
 	Confidence string          `json:"confidence" jsonschema:"low, medium, or high; mostly driven by text length"`
 	Kind       detect.Kind     `json:"kind"`
 	WordCount  int             `json:"word_count"`
 	Reasons    []Reason        `json:"reasons" jsonschema:"why the text got its score, strongest first"`
 	Signals    []detect.Signal `json:"signals" jsonschema:"raw measurements from every detector"`
 	Segments   []Segment       `json:"segments,omitempty" jsonschema:"per-chunk scores for longer documents"`
-	AIFraction *float64        `json:"ai_fraction,omitempty" jsonschema:"share of segments scoring 50 or higher"`
+	AIFraction *float64        `json:"ai_fraction,omitempty" jsonschema:"share of segments at or above the likely-AI cutoff"`
+	Cutoffs    Thresholds      `json:"cutoffs" jsonschema:"raw-score cutoffs for this kind that map to 40, 60, and 80, with measured human rates"`
 	Notes      []string        `json:"notes,omitempty"`
 }
 
@@ -55,8 +57,68 @@ type Segment struct {
 }
 
 type Engine struct {
-	detectors []detect.Detector
-	models    map[detect.Kind]*calibrate.Model
+	detectors  []detect.Detector
+	models     map[detect.Kind]*calibrate.Model
+	thresholds map[detect.Kind]Thresholds
+}
+
+// Thresholds are raw-score cutoffs, chosen per kind so that a fixed share of
+// held-out human text reaches each one. Scale maps them to 40, 60, and 80 so
+// scores mean the same thing for every kind. The Human* fields record the
+// share measured on the other half of that text.
+type Thresholds struct {
+	Mixed    int `json:"mixed" jsonschema:"at or above: mixed (possibly AI-assisted)"`
+	LikelyAI int `json:"likely_ai" jsonschema:"at or above: likely AI"`
+	AI       int `json:"ai" jsonschema:"at or above: AI"`
+
+	HumanAtMixed    float64 `json:"human_at_mixed,omitempty" jsonschema:"share of held-out human texts scoring at or above mixed"`
+	HumanAtLikelyAI float64 `json:"human_at_likely_ai,omitempty" jsonschema:"share of held-out human texts scoring at or above likely AI"`
+	HumanAtAI       float64 `json:"human_at_ai,omitempty" jsonschema:"share of held-out human texts scoring at or above AI"`
+	CalibratedOn    int     `json:"calibrated_on,omitempty" jsonschema:"human texts used to set the cutoffs"`
+}
+
+// DefaultThresholds apply to kinds without fitted cutoffs; Scale is then the
+// identity.
+var DefaultThresholds = Thresholds{Mixed: 40, LikelyAI: 60, AI: 80}
+
+// Scale maps a raw score onto the shared scale, piecewise linearly through
+// (0,0), (Mixed,40), (LikelyAI,60), (AI,80), (100,100). It preserves order.
+func (t Thresholds) Scale(raw float64) float64 {
+	xs := []float64{0, float64(t.Mixed), float64(t.LikelyAI), float64(t.AI), 100}
+	ys := []float64{0, 40, 60, 80, 100}
+	for i := 1; i < len(xs); i++ {
+		if raw <= xs[i] {
+			if xs[i] == xs[i-1] {
+				return ys[i]
+			}
+			return ys[i-1] + (raw-xs[i-1])/(xs[i]-xs[i-1])*(ys[i]-ys[i-1])
+		}
+	}
+	return 100
+}
+
+// Label names a score on the shared scale.
+func Label(score int) string {
+	switch {
+	case score >= 80:
+		return "AI"
+	case score >= 60:
+		return "likely AI"
+	case score >= 40:
+		return "mixed (possibly AI-assisted)"
+	case score >= 20:
+		return "likely human"
+	default:
+		return "human"
+	}
+}
+
+// Thresholds returns the label cutoffs for a kind.
+func (e *Engine) Thresholds(k detect.Kind) Thresholds {
+	if t, ok := e.thresholds[k]; ok {
+		return t
+	}
+	return DefaultThresholds
 }
 
 func New(ds ...detect.Detector) *Engine { return &Engine{detectors: ds} }
@@ -81,6 +143,7 @@ func Default() *Engine {
 		}
 	}
 	e.detectors = append(e.detectors, ngram.NewDetector(words))
+	loadModel("thresholds.json", &e.thresholds)
 	return e
 }
 
@@ -110,7 +173,8 @@ func (e *Engine) Analyze(ctx context.Context, in detect.Input) (Result, error) {
 	}
 	res := Result{Kind: in.Kind, WordCount: len(text.Words(in.Text))}
 	if res.WordCount == 0 {
-		res.Score, res.Label, res.Confidence = 50, label(50), "low"
+		res.Cutoffs = e.Thresholds(in.Kind)
+		res.Score, res.RawScore, res.Label, res.Confidence = 50, 50, Label(50), "low"
 		res.Notes = append(res.Notes, "no text to analyze")
 		return res, nil
 	}
@@ -128,9 +192,11 @@ func (e *Engine) Analyze(ctx context.Context, in detect.Input) (Result, error) {
 		res.Notes = append(res.Notes, "the text contained hidden or look-alike characters, which were removed before scoring")
 	}
 	conf := lengthConfidence(in.Kind, res.WordCount)
-	score := e.score(in.Kind, signals, res.WordCount)
-	res.Score = int(math.Round(score))
-	res.Label = label(res.Score)
+	raw := e.score(in.Kind, signals, res.WordCount)
+	res.Cutoffs = e.Thresholds(in.Kind)
+	res.RawScore = int(math.Round(raw))
+	res.Score = int(math.Round(e.scale(in.Kind, raw, signals)))
+	res.Label = Label(res.Score)
 	res.Confidence = confidenceLabel(conf, signals)
 	res.Signals = signals
 	res.Reasons = e.reasons(in.Kind, signals, res.WordCount)
@@ -174,8 +240,8 @@ func (e *Engine) segments(ctx context.Context, in detect.Input, res *Result) err
 			return err
 		}
 		n := len(text.Words(w))
-		score := int(math.Round(e.score(in.Kind, s, n)))
-		if score >= 50 {
+		score := int(math.Round(e.scale(in.Kind, e.score(in.Kind, s, n), s)))
+		if score >= 60 {
 			flagged++
 		}
 		res.Segments = append(res.Segments, Segment{Index: i, Score: score, Words: n, Preview: preview(w)})
@@ -206,6 +272,18 @@ func (e *Engine) score(k detect.Kind, signals []detect.Signal, words int) float6
 		score = max(score, 97)
 	}
 	return score
+}
+
+// scale maps a raw score onto the shared scale. A decisive tell still
+// guarantees at least 97.
+func (e *Engine) scale(k detect.Kind, raw float64, signals []detect.Signal) float64 {
+	scaled := e.Thresholds(k).Scale(raw)
+	for _, s := range signals {
+		if s.Decisive {
+			return max(scaled, 97)
+		}
+	}
+	return scaled
 }
 
 // reasons ranks the factors behind a score. With a fitted model these are the
@@ -347,21 +425,6 @@ func confidenceLabel(conf float64, signals []detect.Signal) string {
 		return "medium"
 	default:
 		return "high"
-	}
-}
-
-func label(score int) string {
-	switch {
-	case score >= 80:
-		return "AI"
-	case score >= 60:
-		return "likely AI"
-	case score > 40:
-		return "uncertain"
-	case score > 20:
-		return "likely human"
-	default:
-		return "human"
 	}
 }
 
