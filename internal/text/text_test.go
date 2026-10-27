@@ -20,3 +20,24 @@ func TestWindowsFoldsShortTail(t *testing.T) {
 		t.Errorf("got %d windows, want 2: %q", len(got), got)
 	}
 }
+
+func TestStripLinks(t *testing.T) {
+	in := "Fix crash on empty config (#4521)\n\nFixes #4520. See https://github.com/x/y/issues/1 and thanks @alice for the report.\nCloses golang/go#123"
+	want := "Fix crash on empty config\n\nSee and thanks for the report."
+	if got := StripLinks(in); got != want {
+		t.Errorf("got  %q\nwant %q", got, want)
+	}
+}
+
+func TestStripEnvelope(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Hi Phillip,\n\nThe draw request is attached. Please wire the funds.\n\nBest,\nGreg", "The draw request is attached. Please wire the funds."},
+		{"Phillip & Keith\n\nAttached is the first draw request. Again, thanks for your help. Sincerely,", "Attached is the first draw request. Again, thanks for your help."},
+		{"Thank you for meeting with us today. We will send the list by Friday.", "Thank you for meeting with us today. We will send the list by Friday."},
+	}
+	for _, c := range cases {
+		if got := StripEnvelope(c.in); got != c.want {
+			t.Errorf("got  %q\nwant %q", got, c.want)
+		}
+	}
+}

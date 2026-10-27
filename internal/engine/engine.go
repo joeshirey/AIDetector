@@ -13,6 +13,8 @@ import (
 	"github.com/joeshirey/AIDetector/internal/calibrate"
 	"github.com/joeshirey/AIDetector/internal/detect"
 	"github.com/joeshirey/AIDetector/internal/detect/devtext"
+	"github.com/joeshirey/AIDetector/internal/detect/ngram"
+	"github.com/joeshirey/AIDetector/internal/detect/signs"
 	"github.com/joeshirey/AIDetector/internal/detect/stylometric"
 	"github.com/joeshirey/AIDetector/internal/text"
 )
@@ -47,28 +49,40 @@ func New(ds ...detect.Detector) *Engine { return &Engine{detectors: ds} }
 //go:embed models
 var modelFS embed.FS
 
-// Default returns an engine with every built-in detector and any fitted
-// calibration models embedded in the binary.
+// Default returns an engine with every built-in detector plus the fitted
+// word-pattern and calibration models embedded in the binary.
 func Default() *Engine {
 	e := Heuristic()
 	e.models = map[detect.Kind]*calibrate.Model{}
+	words := map[detect.Kind]*ngram.Model{}
 	for _, k := range []detect.Kind{detect.KindProse, detect.KindCommit, detect.KindPR} {
-		b, err := modelFS.ReadFile("models/" + string(k) + ".json")
-		if err != nil {
-			continue
-		}
 		var m calibrate.Model
-		if err := json.Unmarshal(b, &m); err != nil {
-			panic(fmt.Sprintf("embedded model %s: %v", k, err))
+		if loadModel(string(k)+".json", &m) {
+			e.models[k] = &m
 		}
-		e.models[k] = &m
+		var w ngram.Model
+		if loadModel(string(k)+".ngram.json", &w) {
+			words[k] = &w
+		}
 	}
+	e.detectors = append(e.detectors, ngram.NewDetector(words))
 	return e
+}
+
+func loadModel(name string, v any) bool {
+	b, err := modelFS.ReadFile("models/" + name)
+	if err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, v); err != nil {
+		panic(fmt.Sprintf("embedded model %s: %v", name, err))
+	}
+	return true
 }
 
 // Heuristic returns an engine that ignores fitted models and uses the
 // hand-set signal weights, for comparison.
-func Heuristic() *Engine { return New(stylometric.New(), devtext.New()) }
+func Heuristic() *Engine { return New(stylometric.New(), devtext.New(), signs.New()) }
 
 // segmentWords is the target chunk size for per-segment scoring.
 const segmentWords = 200
