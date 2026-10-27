@@ -58,16 +58,31 @@ An explicit AI attribution (e.g. `Co-Authored-By: Claude`) sets a floor of 97.
 Kinds with a fitted model in `internal/engine/models/` are scored by that
 model. Others fall back to hand-set weights, which are rough guesses.
 
-### Held-out accuracy (20% test split, 2026-10-27)
+### Held-out accuracy (2026-10-27, 2,793 human/AI pairs)
+
+Test split (20%, includes hard negatives chosen by the previous model):
 
 | Kind | AUROC | AI caught at ≤1% false positives |
 |---|---|---|
-| Prose (blogs + memos) | 0.995 | 92% |
-| PRs | 0.963 | 52% |
-| Commits | 0.898 | 37% |
+| Prose (blogs, memos, essays) | 0.989 | 89% |
+| PRs | 0.985 | 85% |
+| Commits | 0.856 | 40% |
 
-Out of distribution, 15 pre-2022 Go blog posts (a source the detector was never trained on) all
-scored below 50. The weakest spot is short commits from Gemini Flash (AUROC 0.77).
+False-positive rate on a fresh human pool, never trained on or used for
+mining (commits and PRs from 10 repos the corpus never used):
+
+| Human texts | Scored 50+ | Scored 80+ |
+|---|---|---|
+| Learner essays (600) | 0.0% | 0.0% |
+| Blogs (600) | 0.2% | 0.0% |
+| Memos (600) | 3.7% | 0.3% |
+| PRs (300) | 5.7% | 0.0% |
+| Commits (600) | 17.8% | 1.8% |
+
+Eval-only sets: after a humanizer rewrite, 87–98% of AI texts still score 50+.
+Human text polished by AI lands in between (blog and memo median ~47, essays
+66, PRs 8). Commits are the weak spot: treat a commit score below ~80 as weak
+evidence.
 
 ### Where the rules come from
 

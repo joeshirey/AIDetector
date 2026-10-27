@@ -55,12 +55,14 @@ var phraseSets = []phraseSet{
 	// From "Forensics for AI Generated Text" (persistent 2026 syntactic artifacts).
 	{"signposts", "mechanical signpost openers (Furthermore, Moreover…)", 1.5, regexp.MustCompile(`(?im)(?:^|[.!?]\s+)(?:furthermore|moreover|additionally|consequently|notably|importantly|ultimately|overall|in summary|in conclusion|to summarize|it(?: i|')s worth noting that|it(?: i|')s important to note that),`)},
 	{"corporate_verbs", "corporate Latinate verbs (utilize, facilitate…)", 2, regexp.MustCompile(words(`utiliz(?:e|es|ed|ing)`, `facilitat(?:e|es|ed|ing)`, `streamlin(?:e|es|ed|ing)`, `empower(?:s|ed|ing)?`, `harness(?:es|ed|ing)?`, `revolutioniz(?:e|es|ed|ing)`, `elevat(?:e|es|ed|ing)`, `optimiz(?:e|es|ed|ing)`, `spearhead(?:s|ed|ing)?`))},
+	{"chatbot_phrases", "chatbot wrapper phrases (§22)", 0.5, regexp.MustCompile(words(`i hope this helps`, `great question`, `certainly! here`, `would you like me to`, `let me know if you'?d like me to`, `happy to help`))},
 	{"human_markers", "plain constructions humans use more (Wikipedia: Syntax)", 6, regexp.MustCompile(words(`there (?:is|are|was|were) an?`, `it has an?`, `very`, `perhaps`, `tends? to`, `in order to`, `the fact that`, `all of the`, `a part of`, `as a result of`, `one of the (?:best|worst|most)`, `was the first`, `is the only`, `kind of`, `sort of`, `pretty much`))},
 }
 
-// residueRE matches chatbot wrappers that essentially never appear in
-// standalone human writing (§22). One hit is decisive.
-var residueRE = regexp.MustCompile(words(`i hope this helps`, `great question`, `as an ai(?: language model)?`, `as of my (?:last )?(?:knowledge|training) (?:cutoff|update)`, `up to my last training`, `certainly! here`, `would you like me to`, `let me know if you'?d like me to`, `i can'?t browse`))
+// residueRE matches text only a chatbot produces (§22). One hit is decisive.
+// Friendlier wrappers ("I hope this helps", "great question") also occur in
+// human blogs and essays, so they're an ordinary feature (chatbot_phrases).
+var residueRE = regexp.MustCompile(words(`as an ai(?: language model| assistant)`, `as of my (?:last )?(?:knowledge|training) (?:cutoff|update)`, `up to my last training`, `i (?:can'?t|cannot) browse the (?:internet|web)`, `i don'?t have (?:real-time|browsing) (?:access|capabilities)`))
 
 func (*Detector) Detect(_ context.Context, in detect.Input) ([]detect.Signal, error) {
 	body := text.StripCode(in.Text)

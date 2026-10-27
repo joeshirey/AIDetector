@@ -58,6 +58,8 @@ func main() {
 	pool := fs.Bool("pool", false, "harvest: collect into the human-only reserve pool")
 	hard := fs.Float64("hard", 0.5, "promote: share of promotions taken from the highest-scoring (hard-negative) pool texts")
 	variant := fs.String("type", "", "variant: polished or humanized")
+	exclude := fs.String("exclude", "", "harvest: skip samples already in this other corpus directory (for fresh, unbiased pools)")
+	phase := fs.Int("phase", 3, "harvest -pool: which every-7th Medium row to sample (0 is the training harvest)")
 	repos := fs.String("repos", strings.Join(defaultRepos, ","), "harvest: GitHub repos for commits and PRs")
 	gens := fs.String("gens", defaultGens, "mirror/ping: generators as provider:model, comma-separated")
 	workers := fs.Int("j", 8, "mirror: concurrent requests")
@@ -73,7 +75,11 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "harvest":
-		err = harvest(ctx, store, selected, *n, *pool, strings.Split(*repos, ","))
+		var other *corpus.Store
+		if *exclude != "" {
+			other = &corpus.Store{Root: *exclude}
+		}
+		err = harvest(ctx, store, other, selected, *n, *pool, *phase, strings.Split(*repos, ","))
 	case "promote":
 		err = promote(ctx, store, selected, *n, *hard)
 	case "variant":
@@ -113,7 +119,7 @@ func usage() {
 	os.Exit(2)
 }
 
-func harvest(ctx context.Context, store *corpus.Store, kinds []string, n int, pool bool, repos []string) error {
+func harvest(ctx context.Context, store, exclude *corpus.Store, kinds []string, n int, pool bool, mediumPhase int, repos []string) error {
 	defaults := map[string]int{"commit": 400, "pr": 240, "blog": 250, "memo": 250, "essay": 0}
 	if pool {
 		defaults = map[string]int{"commit": 1500, "pr": 600, "blog": 1500, "memo": 1500, "essay": 2000}
@@ -137,7 +143,7 @@ func harvest(ctx context.Context, store *corpus.Store, kinds []string, n int, po
 		if want == 0 {
 			want = defaults[k]
 		}
-		seen := func(id string) bool { return store.Has(k, id) }
+		seen := func(id string) bool { return store.Has(k, id) || (exclude != nil && exclude.Has(k, id)) }
 		var samples []corpus.Sample
 		var err error
 		switch k {
@@ -172,7 +178,7 @@ func harvest(ctx context.Context, store *corpus.Store, kinds []string, n int, po
 					return err
 				}
 				samples = append(samples, gob...)
-				phase, medium = 3, max(0, want-len(gob))
+				phase, medium = mediumPhase, max(0, want-len(gob))
 			}
 			var med []corpus.Sample
 			if med, err = corpus.HarvestMedium(ctx, corpus.Cutoff, medium, phase, seen); err == nil {
