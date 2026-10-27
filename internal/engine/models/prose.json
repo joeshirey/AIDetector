@@ -1,65 +1,226 @@
 {
-  "kind": "prose",
-  "bias": 0.8234111284131103,
-  "features": [
-    {
-      "name": "ai_phrases",
-      "mean": 0.2622456989715836,
-      "std": 1.1779808186045235,
-      "weight": 0.05128314959428479
-    },
-    {
-      "name": "ai_vocabulary",
-      "mean": 1.5453716014192045,
-      "std": 3.286738131448737,
-      "weight": 0.16246591737094673
-    },
-    {
-      "name": "bold_lead_bullets",
-      "mean": 0,
-      "std": 1,
-      "weight": 0
-    },
-    {
-      "name": "em_dashes",
-      "mean": 1.2570117829258312,
-      "std": 2.8613945916728656,
-      "weight": -0.31696611663676083
-    },
-    {
-      "name": "log_words",
-      "mean": 5.809585520412411,
-      "std": 0.911366898768817,
-      "weight": -0.13085097382767255
-    },
-    {
-      "name": "paragraph_uniformity",
-      "mean": 0.4499432868275057,
-      "std": 0.2023525329007734,
-      "weight": -0.4452708609369669
-    },
-    {
-      "name": "rule_of_three",
-      "mean": 0.05257641425396748,
-      "std": 0.06565258525634737,
-      "weight": 0.27799271345842264
-    },
-    {
-      "name": "sentence_burstiness",
-      "mean": 0.5742065689375788,
-      "std": 0.1606887203687048,
-      "weight": -0.418175019466144
-    }
-  ],
-  "missing": {
-    "ai_phrases": 0,
-    "ai_vocabulary": 0,
-    "bold_lead_bullets": -0.7886462980690911,
-    "em_dashes": 0,
-    "log_words": 0,
-    "paragraph_uniformity": -0.6198782185899196,
-    "rule_of_three": -0.04607407757675007,
-    "sentence_burstiness": -0.04607407757675007
+ "kind": "prose",
+ "bias": 0.20907522840130402,
+ "features": [
+  {
+   "name": "ai_phrases",
+   "mean": 0.26387990056695143,
+   "std": 1.199318540706975,
+   "weight": -0.11055506929581153
   },
-  "trained_on": 802
+  {
+   "name": "ai_vocabulary",
+   "mean": 1.5575339901981087,
+   "std": 3.319037268253981,
+   "weight": -0.10646899906949683
+  },
+  {
+   "name": "arguing_with_no_one",
+   "mean": 0.018954466392159953,
+   "std": 0.16775290467749454,
+   "weight": 0.1548601432725759
+  },
+  {
+   "name": "bold_lead_bullets",
+   "mean": 0,
+   "std": 1,
+   "weight": 0
+  },
+  {
+   "name": "chatbot_residue",
+   "mean": 1,
+   "std": 1,
+   "weight": 0
+  },
+  {
+   "name": "copula_avoidance",
+   "mean": 0.04600273299829825,
+   "std": 0.36153796362542384,
+   "weight": -0.029330599997025877
+  },
+  {
+   "name": "deep_sayings",
+   "mean": 0.05381381596639438,
+   "std": 0.2820464685891451,
+   "weight": 0.05604893022961564
+  },
+  {
+   "name": "em_dashes",
+   "mean": 1.257923268153613,
+   "std": 2.863130094623817,
+   "weight": -0.32729419457302966
+  },
+  {
+   "name": "human_markers",
+   "mean": 1.5855856540449018,
+   "std": 3.127350997926339,
+   "weight": -0.05597333447612355
+  },
+  {
+   "name": "inflated_significance",
+   "mean": 0.006595094032116822,
+   "std": 0.10816640948366917,
+   "weight": -0.01018388599216399
+  },
+  {
+   "name": "ing_riders",
+   "mean": 0.06906295408207583,
+   "std": 0.4674024193672484,
+   "weight": 0.1368744240149577
+  },
+  {
+   "name": "knowledge_disclaimers",
+   "mean": 0,
+   "std": 1,
+   "weight": 0
+  },
+  {
+   "name": "lexical_diversity",
+   "mean": 0.7344671390599922,
+   "std": 0.06400844710243989,
+   "weight": 0.5406999117101129
+  },
+  {
+   "name": "log_words",
+   "mean": 5.8028977259551535,
+   "std": 0.9181163144264469,
+   "weight": -0.2114511177579912
+  },
+  {
+   "name": "negative_parallelism",
+   "mean": 0.40695529768603467,
+   "std": 1.0401983029869166,
+   "weight": 0.02744087788979123
+  },
+  {
+   "name": "one_line_paragraphs",
+   "mean": 0.2758410706456349,
+   "std": 0.2026106204692336,
+   "weight": -0.3000936928933002
+  },
+  {
+   "name": "paragraph_uniformity",
+   "mean": 0.44986392658955404,
+   "std": 0.2024498736407155,
+   "weight": -0.18042745198233082
+  },
+  {
+   "name": "punctuation_variety",
+   "mean": 0.1736570364664327,
+   "std": 0.13171978884885036,
+   "weight": 0.15654828754952174
+  },
+  {
+   "name": "repeated_openings",
+   "mean": 0.050322734085715574,
+   "std": 0.08040554367182541,
+   "weight": -0.1652596420140775
+  },
+  {
+   "name": "rule_of_three",
+   "mean": 0.05396281797804782,
+   "std": 0.06748282995257082,
+   "weight": -0.043853982755645005
+  },
+  {
+   "name": "sales_language",
+   "mean": 0.06561102745389284,
+   "std": 0.5585432892431677,
+   "weight": -0.06284601042036543
+  },
+  {
+   "name": "sentence_band",
+   "mean": 0.5240674307268182,
+   "std": 0.15898661437108047,
+   "weight": 0.38674356378178376
+  },
+  {
+   "name": "sentence_burstiness",
+   "mean": 0.532103995462035,
+   "std": 0.16437881941674953,
+   "weight": -0.34294131975415165
+  },
+  {
+   "name": "stacked_qualifiers",
+   "mean": 0.0034793352060919743,
+   "std": 0.05807829671380765,
+   "weight": 0.0024024109407699465
+  },
+  {
+   "name": "staged_runup",
+   "mean": 0.01681333134582711,
+   "std": 0.23203885615208017,
+   "weight": 0.07362332451148858
+  },
+  {
+   "name": "stock_closers",
+   "mean": 0.0030498075309854447,
+   "std": 0.05023274242080741,
+   "weight": 0.09219498359931257
+  },
+  {
+   "name": "vague_association",
+   "mean": 0.011634888438159626,
+   "std": 0.13545020576336292,
+   "weight": 0.02066422368425038
+  },
+  {
+   "name": "vocab_2023",
+   "mean": 0.2669294216743028,
+   "std": 0.9839203821381799,
+   "weight": -0.04008550072709155
+  },
+  {
+   "name": "vocab_2024",
+   "mean": 0.39420593446320595,
+   "std": 1.4563537035600163,
+   "weight": 0.08611606625906741
+  },
+  {
+   "name": "vocab_2026",
+   "mean": 0.7413148675218607,
+   "std": 1.5964483385097847,
+   "weight": 0.003920981848599491
+  },
+  {
+   "name": "word_patterns",
+   "mean": -0.032959542567540814,
+   "std": 1.529684573387197,
+   "weight": 2.842837690869798
+  }
+ ],
+ "missing": {
+  "ai_phrases": 0,
+  "ai_vocabulary": 0,
+  "arguing_with_no_one": 0,
+  "bold_lead_bullets": -0.1335732824644864,
+  "chatbot_residue": 0.03942646237435103,
+  "copula_avoidance": 0,
+  "deep_sayings": 0,
+  "em_dashes": 0,
+  "human_markers": 0,
+  "inflated_significance": 0,
+  "ing_riders": 0,
+  "knowledge_disclaimers": 0,
+  "lexical_diversity": 0.005845240664765423,
+  "log_words": 0,
+  "negative_parallelism": 0,
+  "one_line_paragraphs": -0.5460435215986864,
+  "paragraph_uniformity": -0.19669710192017356,
+  "punctuation_variety": -0.16902924190529528,
+  "repeated_openings": 0.17954005537940831,
+  "rule_of_three": -0.013496965031916852,
+  "sales_language": 0,
+  "sentence_band": -0.013496965031916852,
+  "sentence_burstiness": -0.013496965031916852,
+  "stacked_qualifiers": 0,
+  "staged_runup": 0,
+  "stock_closers": 0,
+  "vague_association": 0,
+  "vocab_2023": 0,
+  "vocab_2024": 0,
+  "vocab_2026": 0,
+  "word_patterns": 0
+ },
+ "trained_on": 802
 }

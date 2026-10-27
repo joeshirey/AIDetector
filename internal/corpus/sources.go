@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/joeshirey/AIDetector/internal/text"
 )
 
 // Cutoff is the default "definitely human" boundary: ChatGPT launched
@@ -128,7 +130,7 @@ func HarvestCommits(ctx context.Context, repo string, before time.Time, n int, s
 				continue // huge or binary diffs fail; skip them
 			}
 			out = append(out, Sample{
-				ID: id, Kind: "commit", Source: "github:" + repo, Text: msg,
+				ID: id, Kind: "commit", Source: "github:" + repo, Text: text.Normalize("commit", msg),
 				Context: map[string]string{"repo": repo, "diff": truncateDiff(string(diff)), "style": strings.Join(lastN(subjects, 5), "\n")},
 			})
 			subjects = append(subjects, subject)
@@ -172,7 +174,7 @@ func HarvestPRs(ctx context.Context, repo string, before time.Time, n int, seen 
 			continue
 		}
 		out = append(out, Sample{
-			ID: id, Kind: "pr", Source: "github:" + repo, Text: body,
+			ID: id, Kind: "pr", Source: "github:" + repo, Text: text.Normalize("pr", body),
 			Context: map[string]string{"repo": repo, "title": pr.Title, "diff": truncateDiff(string(diff))},
 		})
 	}
@@ -312,7 +314,7 @@ func HarvestEnron(ctx context.Context, n int, seen func(id string) bool) ([]Samp
 				continue
 			}
 			out = append(out, Sample{
-				ID: id, Kind: "memo", Source: "aeslc", Text: body,
+				ID: id, Kind: "memo", Source: "aeslc", Text: text.Normalize("memo", body),
 				Context: map[string]string{"subject": r.Row.Subject, "words": fmt.Sprint(words)},
 			})
 		}

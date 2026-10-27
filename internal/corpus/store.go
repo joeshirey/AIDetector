@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/joeshirey/AIDetector/internal/text"
 )
 
 // Store lays out a corpus on disk:
@@ -91,6 +93,42 @@ func (s *Store) Log(kind string, e ManifestEntry) error {
 	}
 	defer f.Close()
 	return json.NewEncoder(f).Encode(e)
+}
+
+// Renormalize re-applies the current normalization to every human and AI
+// text of a kind, so corpus files match what new harvests would produce.
+func (s *Store) Renormalize(kind string) (changed int, err error) {
+	paths, _ := filepath.Glob(s.dir(kind, "human", "*.txt"))
+	ai, _ := filepath.Glob(s.dir(kind, "ai", "*", "*.txt"))
+	for _, p := range append(paths, ai...) {
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return changed, err
+		}
+		orig := strings.TrimSpace(string(b))
+		norm := text.Normalize(kind, orig)
+		if norm == orig {
+			continue
+		}
+		if err := writeFile(p, norm); err != nil {
+			return changed, err
+		}
+		changed++
+	}
+	// Keep src/*.json in step with human/*.txt.
+	srcs, err := s.Sources(kind)
+	if err != nil {
+		return changed, err
+	}
+	for _, sm := range srcs {
+		if norm := text.Normalize(kind, sm.Text); norm != sm.Text {
+			sm.Text = norm
+			if err := s.SaveHuman(sm); err != nil {
+				return changed, err
+			}
+		}
+	}
+	return changed, nil
 }
 
 func hashN(id string, n int) int {

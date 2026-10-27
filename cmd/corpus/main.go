@@ -3,6 +3,7 @@
 //
 //	corpus harvest [-kind all|commit|pr|blog|memo] [-n N]
 //	corpus mirror  [-kind ...] [-gens provider:model,...] [-j 8] [-limit N]
+//	corpus renormalize [-kind ...]
 //	corpus stats
 //	corpus ping    [-gens ...]
 package main
@@ -71,6 +72,15 @@ func main() {
 		}
 	case "stats":
 		err = stats(*root)
+	case "renormalize":
+		for _, k := range selected {
+			n, rerr := store.Renormalize(k)
+			if rerr != nil {
+				err = rerr
+				break
+			}
+			log.Printf("%s: renormalized %d files", k, n)
+		}
 	case "ping":
 		err = runPing(ctx, *gens)
 	default:
@@ -82,7 +92,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: corpus harvest|mirror|stats|ping [flags]  (corpus <cmd> -h for flags)")
+	fmt.Fprintln(os.Stderr, "usage: corpus harvest|mirror|renormalize|stats|ping [flags]  (corpus <cmd> -h for flags)")
 	os.Exit(2)
 }
 
