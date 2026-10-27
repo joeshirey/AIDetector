@@ -1,0 +1,65 @@
+{
+  "kind": "commit",
+  "bias": -0.5014024786338979,
+  "features": [
+    {
+      "name": "ai_phrases",
+      "mean": 0,
+      "std": 1,
+      "weight": 0
+    },
+    {
+      "name": "ai_vocabulary",
+      "mean": 1.4976772897081545,
+      "std": 6.519800000105095,
+      "weight": -0.1441691420674949
+    },
+    {
+      "name": "bullet_uniformity",
+      "mean": 0.3559928768122309,
+      "std": 0.19098108782599746,
+      "weight": -0.4031330375277637
+    },
+    {
+      "name": "bulleted_change_list",
+      "mean": 0.3002463806035235,
+      "std": 0.3637361522659469,
+      "weight": 0.16647119525544132
+    },
+    {
+      "name": "log_words",
+      "mean": 3.199370680888081,
+      "std": 1.0458593666994214,
+      "weight": 0.5779915266572127
+    },
+    {
+      "name": "loose_subject",
+      "mean": 54.203619909502265,
+      "std": 20.356754480014814,
+      "weight": 0.06659905800521679
+    },
+    {
+      "name": "single_line",
+      "mean": 6.932126696832579,
+      "std": 2.389628703672178,
+      "weight": 0.18308213145751412
+    },
+    {
+      "name": "terse_subject",
+      "mean": 7.25,
+      "std": 2.5860201081971503,
+      "weight": -0.1506018544416602
+    }
+  ],
+  "missing": {
+    "ai_phrases": -0.3459622030392554,
+    "ai_vocabulary": -0.3459622030392554,
+    "bullet_uniformity": 0.3072618110311604,
+    "bulleted_change_list": 0.44000128668003025,
+    "log_words": 0,
+    "loose_subject": 0.5099250789814392,
+    "single_line": -0.30979671096232936,
+    "terse_subject": -0.08261152657307234
+  },
+  "trained_on": 663
+}

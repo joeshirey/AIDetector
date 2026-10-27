@@ -1,0 +1,65 @@
+{
+  "kind": "prose",
+  "bias": 0.8234111284131103,
+  "features": [
+    {
+      "name": "ai_phrases",
+      "mean": 0.2622456989715836,
+      "std": 1.1779808186045235,
+      "weight": 0.05128314959428479
+    },
+    {
+      "name": "ai_vocabulary",
+      "mean": 1.5453716014192045,
+      "std": 3.286738131448737,
+      "weight": 0.16246591737094673
+    },
+    {
+      "name": "bold_lead_bullets",
+      "mean": 0,
+      "std": 1,
+      "weight": 0
+    },
+    {
+      "name": "em_dashes",
+      "mean": 1.2570117829258312,
+      "std": 2.8613945916728656,
+      "weight": -0.31696611663676083
+    },
+    {
+      "name": "log_words",
+      "mean": 5.809585520412411,
+      "std": 0.911366898768817,
+      "weight": -0.13085097382767255
+    },
+    {
+      "name": "paragraph_uniformity",
+      "mean": 0.4499432868275057,
+      "std": 0.2023525329007734,
+      "weight": -0.4452708609369669
+    },
+    {
+      "name": "rule_of_three",
+      "mean": 0.05257641425396748,
+      "std": 0.06565258525634737,
+      "weight": 0.27799271345842264
+    },
+    {
+      "name": "sentence_burstiness",
+      "mean": 0.5742065689375788,
+      "std": 0.1606887203687048,
+      "weight": -0.418175019466144
+    }
+  ],
+  "missing": {
+    "ai_phrases": 0,
+    "ai_vocabulary": 0,
+    "bold_lead_bullets": -0.7886462980690911,
+    "em_dashes": 0,
+    "log_words": 0,
+    "paragraph_uniformity": -0.6198782185899196,
+    "rule_of_three": -0.04607407757675007,
+    "sentence_burstiness": -0.04607407757675007
+  },
+  "trained_on": 802
+}
