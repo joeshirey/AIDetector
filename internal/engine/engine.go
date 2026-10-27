@@ -3,11 +3,13 @@
 package engine
 
 import (
+	"cmp"
 	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/joeshirey/AIDetector/internal/calibrate"
@@ -26,10 +28,23 @@ type Result struct {
 	Confidence string          `json:"confidence" jsonschema:"low, medium, or high; mostly driven by text length"`
 	Kind       detect.Kind     `json:"kind"`
 	WordCount  int             `json:"word_count"`
-	Signals    []detect.Signal `json:"signals"`
+	Reasons    []Reason        `json:"reasons" jsonschema:"why the text got its score, strongest first"`
+	Signals    []detect.Signal `json:"signals" jsonschema:"raw measurements from every detector"`
 	Segments   []Segment       `json:"segments,omitempty" jsonschema:"per-chunk scores for longer documents"`
 	AIFraction *float64        `json:"ai_fraction,omitempty" jsonschema:"share of segments scoring 50 or higher"`
 	Notes      []string        `json:"notes,omitempty"`
+}
+
+// Reason explains one factor behind a score.
+type Reason struct {
+	Signal    string   `json:"signal"`
+	Direction string   `json:"direction" jsonschema:"AI, human, or warning"`
+	Impact    string   `json:"impact" jsonschema:"decisive, high, medium, or low"`
+	Logit     float64  `json:"log_odds" jsonschema:"contribution to the score in log-odds; positive pushes toward AI"`
+	Observed  float64  `json:"observed"`
+	TypicalH  *float64 `json:"typical_human,omitempty" jsonschema:"median value in human training text"`
+	TypicalAI *float64 `json:"typical_ai,omitempty" jsonschema:"median value in AI training text"`
+	Detail    string   `json:"detail"`
 }
 
 type Segment struct {
@@ -88,7 +103,8 @@ func Heuristic() *Engine { return New(stylometric.New(), devtext.New(), signs.Ne
 const segmentWords = 200
 
 func (e *Engine) Analyze(ctx context.Context, in detect.Input) (Result, error) {
-	in.Text = strings.TrimSpace(in.Text)
+	clean, tamper := text.Sanitize(in.Text)
+	in.Text = strings.TrimSpace(clean)
 	if in.Kind == "" || in.Kind == detect.KindAuto {
 		in.Kind = detect.GuessKind(in.Text)
 	}
@@ -103,12 +119,21 @@ func (e *Engine) Analyze(ctx context.Context, in detect.Input) (Result, error) {
 	if err != nil {
 		return res, err
 	}
+	if tamper.Any() {
+		signals = append(signals, detect.Signal{
+			Name: "unicode_tampering", Detector: "sanitizer", Value: float64(tamper.ZeroWidth + tamper.Homoglyphs),
+			AIProb: 0.5, Weight: 0,
+			Detail: fmt.Sprintf("removed %d invisible characters and %d look-alike letters before scoring; text may have been altered to evade or confuse detectors", tamper.ZeroWidth, tamper.Homoglyphs),
+		})
+		res.Notes = append(res.Notes, "the text contained hidden or look-alike characters, which were removed before scoring")
+	}
 	conf := lengthConfidence(in.Kind, res.WordCount)
 	score := e.score(in.Kind, signals, res.WordCount)
 	res.Score = int(math.Round(score))
 	res.Label = label(res.Score)
 	res.Confidence = confidenceLabel(conf, signals)
 	res.Signals = signals
+	res.Reasons = e.reasons(in.Kind, signals, res.WordCount)
 
 	if conf < 0.4 && res.Score < 97 && e.models[in.Kind] == nil {
 		res.Notes = append(res.Notes, fmt.Sprintf("only %d words; short texts are hard to judge, so the score is pulled toward 50", res.WordCount))
@@ -181,6 +206,95 @@ func (e *Engine) score(k detect.Kind, signals []detect.Signal, words int) float6
 		score = max(score, 97)
 	}
 	return score
+}
+
+// reasons ranks the factors behind a score. With a fitted model these are the
+// model's actual per-feature contributions; otherwise the hand-set weights.
+func (e *Engine) reasons(k detect.Kind, signals []detect.Signal, words int) []Reason {
+	var out []Reason
+	byName := map[string]detect.Signal{}
+	for _, s := range signals {
+		byName[s.Name] = s
+		switch {
+		case s.Decisive:
+			out = append(out, Reason{Signal: s.Name, Direction: "AI", Impact: "decisive", Logit: 10, Observed: s.Value, Detail: s.Detail})
+		case s.Detector == "sanitizer":
+			out = append(out, Reason{Signal: s.Name, Direction: "warning", Impact: "high", Observed: s.Value, Detail: s.Detail})
+		}
+	}
+	add := func(r Reason) {
+		if math.Abs(r.Logit) < 0.15 {
+			return
+		}
+		r.Direction = "human"
+		if r.Logit > 0 {
+			r.Direction = "AI"
+		}
+		switch a := math.Abs(r.Logit); {
+		case a >= 1:
+			r.Impact = "high"
+		case a >= 0.4:
+			r.Impact = "medium"
+		default:
+			r.Impact = "low"
+		}
+		out = append(out, r)
+	}
+	if m := e.models[k]; m != nil {
+		feats := map[string]float64{}
+		for _, s := range signals {
+			if !s.Decisive && s.Detector != "sanitizer" {
+				feats[s.Name] = s.Value
+			}
+		}
+		for _, c := range m.Contributions(feats, words) {
+			if !c.Present {
+				continue
+			}
+			h, a := c.HumanMedian, c.AIMedian
+			// With correlated features a weight can flip sign. Skip a reason
+			// whose push contradicts which typical value it's closer to, since
+			// it would read as nonsense even though the total is right.
+			if c.Name != "word_patterns" && h != a && (math.Abs(c.Value-a) < math.Abs(c.Value-h)) != (c.Logit > 0) {
+				continue
+			}
+			detail := byName[c.Name].Detail
+			if c.Name == "log_words" {
+				detail = fmt.Sprintf("length: %d words", words)
+			}
+			add(Reason{Signal: c.Name, Logit: c.Logit, Observed: c.Value, TypicalH: &h, TypicalAI: &a, Detail: detail})
+		}
+	} else {
+		for _, s := range signals {
+			if s.Decisive || s.Weight == 0 {
+				continue
+			}
+			p := min(max(s.AIProb, 0.02), 0.98)
+			add(Reason{Signal: s.Name, Logit: s.Weight * math.Log(p/(1-p)), Observed: s.Value, Detail: s.Detail})
+		}
+	}
+	rank := map[string]int{"decisive": 0}
+	slices.SortStableFunc(out, func(a, b Reason) int {
+		_, okA := rank[a.Impact]
+		_, okB := rank[b.Impact]
+		if okA != okB {
+			if okA {
+				return -1
+			}
+			return 1
+		}
+		if a.Direction == "warning" != (b.Direction == "warning") {
+			if a.Direction == "warning" {
+				return -1
+			}
+			return 1
+		}
+		return cmp.Compare(math.Abs(b.Logit), math.Abs(a.Logit))
+	})
+	if len(out) > 8 {
+		out = out[:8]
+	}
+	return out
 }
 
 // combine merges signals in log-odds space. Dividing by sqrt(total weight)

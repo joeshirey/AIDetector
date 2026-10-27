@@ -4,6 +4,7 @@
 //	aidetector commits [-repo DIR] [-n N] [range]
 //	aidetector eval [-kind K] [-split train|test] [-heuristic] [-json] DIR...
 //	aidetector fit  -kind K DIR...
+//	aidetector dist [-kind K] DIR...   score distribution of a folder (e.g. the human pool)
 package main
 
 import (
@@ -12,7 +13,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"text/tabwriter"
 
@@ -30,7 +34,7 @@ func main() {
 	cmd := "detect"
 	if len(args) > 0 {
 		switch args[0] {
-		case "detect", "commits", "eval", "fit":
+		case "detect", "commits", "eval", "fit", "dist":
 			cmd, args = args[0], args[1:]
 		case "-h", "-help", "--help", "help":
 			usage()
@@ -47,6 +51,8 @@ func main() {
 		err = runEval(args)
 	case "fit":
 		err = runFit(args)
+	case "dist":
+		err = runDist(args)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aidetector:", err)
@@ -60,6 +66,7 @@ func usage() {
   aidetector commits [-repo DIR] [-n N] [-json] [range]
   aidetector eval [-kind K] [-split train|test] [-heuristic] [-json] DIR...   (DIR/human/*, DIR/ai/*)
   aidetector fit -kind prose|commit|pr DIR...   (writes internal/engine/models/KIND.json)
+  aidetector dist [-kind K] DIR...   score distribution for every .txt under DIR (pool false-positive rate, variant sets)
 `)
 }
 
@@ -90,10 +97,14 @@ func runDetect(args []string) error {
 		return printJSON(res)
 	}
 	fmt.Printf("Score: %d/100 (%s, %s confidence)\nKind: %s, %d words\n\n", res.Score, res.Label, res.Confidence, res.Kind, res.WordCount)
+	fmt.Println("Why:")
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "SIGNAL\tAI PROB\tWEIGHT\tDETAIL")
-	for _, s := range res.Signals {
-		fmt.Fprintf(tw, "%s\t%.2f\t%.1f\t%s\n", s.Name, s.AIProb, s.Weight, s.Detail)
+	for _, r := range res.Reasons {
+		typical := ""
+		if r.TypicalH != nil && r.Signal != "word_patterns" {
+			typical = fmt.Sprintf("(typical human %s, AI %s)", fmtNum(*r.TypicalH), fmtNum(*r.TypicalAI))
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", arrow(r.Direction), r.Impact, r.Detail, typical)
 	}
 	tw.Flush()
 	if len(res.Segments) > 0 {
@@ -247,6 +258,60 @@ func runFit(args []string) error {
 	return nil
 }
 
+func runDist(args []string) error {
+	fs := flag.NewFlagSet("dist", flag.ExitOnError)
+	kind := fs.String("kind", "auto", "auto, prose, commit, or pr")
+	worst := fs.Int("worst", 5, "list this many highest-scoring files")
+	fs.Parse(args)
+	if fs.NArg() == 0 {
+		usage()
+		os.Exit(2)
+	}
+	e := engine.Default()
+	type scored struct {
+		path  string
+		score int
+	}
+	var all []scored
+	for _, dir := range fs.Args() {
+		paths, err := filepath.Glob(filepath.Join(dir, "*.txt"))
+		if err != nil {
+			return err
+		}
+		sub, _ := filepath.Glob(filepath.Join(dir, "*", "*.txt"))
+		for _, p := range append(paths, sub...) {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			res, err := e.Analyze(context.Background(), detect.Input{Text: string(b), Kind: detect.ParseKind(*kind)})
+			if err != nil {
+				return err
+			}
+			all = append(all, scored{p, res.Score})
+		}
+	}
+	if len(all) == 0 {
+		return fmt.Errorf("no .txt files found")
+	}
+	slices.SortFunc(all, func(a, b scored) int { return b.score - a.score })
+	at := func(t int) float64 {
+		n := 0
+		for _, s := range all {
+			if s.score >= t {
+				n++
+			}
+		}
+		return 100 * float64(n) / float64(len(all))
+	}
+	fmt.Printf("%d texts  median %d  |  scored 50+: %.1f%%  70+: %.1f%%  80+: %.1f%%  90+: %.1f%%\n",
+		len(all), all[len(all)/2].score, at(50), at(70), at(80), at(90))
+	for _, s := range all[:min(*worst, len(all))] {
+		fmt.Printf("  %3d  %s\n", s.score, s.path)
+	}
+	return nil
+}
+
 // fold assigns a sample to one of n cross-validation folds by id, so a human
 // text and its AI mirror always land in the same fold.
 func fold(id string, n int) int {
@@ -259,6 +324,23 @@ func writeJSON(path string, v any) error {
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+func arrow(direction string) string {
+	switch direction {
+	case "AI":
+		return "→ AI"
+	case "human":
+		return "→ human"
+	}
+	return "⚠ warning"
+}
+
+func fmtNum(v float64) string {
+	if math.Abs(v) >= 10 || v == math.Trunc(v) {
+		return fmt.Sprintf("%.0f", v)
+	}
+	return fmt.Sprintf("%.2f", v)
 }
 
 func printJSON(v any) error {

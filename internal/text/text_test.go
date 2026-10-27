@@ -41,3 +41,12 @@ func TestStripEnvelope(t *testing.T) {
 		}
 	}
 }
+
+func TestSanitize(t *testing.T) {
+	in := "The re\u200bsult was fіne (Cyrillic і), but Москва stays. ｆｕｌｌ width"
+	got, tm := Sanitize(in)
+	want := "The result was fine (Cyrillic і), but Москва stays. full width"
+	if got != want || tm.ZeroWidth != 1 || tm.Homoglyphs != 1 {
+		t.Errorf("got %q %+v", got, tm)
+	}
+}

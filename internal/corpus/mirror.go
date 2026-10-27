@@ -38,6 +38,11 @@ var writePrompts = map[string][]string{
 		"I need a Medium article for my blog. Title: \"{title}\". Tags: {tags}. About {words} words. Here's what it should cover:\n{brief}\n\nJust give me the article text.",
 		"Write a ~{words}-word post for a tech/business blog based on this outline. Title: {title}\n\n{brief}\n\nReturn the post only, no commentary.",
 	},
+	"essay": {
+		"Write an essay of about {words} words responding to this prompt.\n\nBrief:\n{brief}\n\nOutput only the essay.",
+		"I need to write an essay for class. Here's what it should argue:\n{brief}\n\nAbout {words} words. Just give me the essay.",
+		"Write a persuasive essay of about {words} words based on these notes.\n\n{brief}\n\nReturn only the essay.",
+	},
 	"memo": {
 		"Write a work email. Subject: {subject}. About {words} words.\n\n{brief}\n\nOutput only the email body.",
 		"Draft an internal email for me based on these notes. Subject: {subject}. Keep it to roughly {words} words.\n\n{brief}\n\nJust the body text please.",
@@ -47,8 +52,9 @@ var writePrompts = map[string][]string{
 // Prose mirrors are written from a brief rather than the original, so the AI
 // text covers the same content without copying its wording.
 var briefPrompts = map[string]string{
-	"blog": "Read this blog post and write a short writing brief for it: the topic, the intended audience, the main points in order (terse bullets), and the tone. Don't quote the post.\n\n<post>\n{text}\n</post>",
-	"memo": "Read this work email and write a brief for it: who it's addressed to (names and roles), its purpose, the key facts and requests in order, and the tone. Don't quote it.\n\n<email>\n{text}\n</email>",
+	"blog":  "Read this blog post and write a short writing brief for it: the topic, the intended audience, the main points in order (terse bullets), and the tone. Don't quote the post.\n\n<post>\n{text}\n</post>",
+	"essay": "Read this student essay and write a brief for it: the question or prompt it responds to, the writer's position, and the main points in order. Don't quote it.\n\n<essay>\n{text}\n</essay>",
+	"memo":  "Read this work email and write a brief for it: who it's addressed to (names and roles), its purpose, the key facts and requests in order, and the tone. Don't quote it.\n\n<email>\n{text}\n</email>",
 }
 
 var evasionRE = regexp.MustCompile(`(?i)humaniz|sounds? (?:more )?human|like a human|natural-sounding|undetect|ai detect|avoid (?:ai|em dash|dashes)|signs of ai|ai tells|written by (?:a person|a human)`)
@@ -195,8 +201,8 @@ func clean(kind, out, title string) string {
 		out = text.Normalize(kind, NormalizePR(out))
 	case "memo":
 		out = text.Normalize(kind, stripMarkdown(subjectRE.ReplaceAllString(out, "")))
-	case "blog":
-		// Human posts don't include their title, so drop a leading heading.
+	case "blog", "essay":
+		// Human texts don't include their title, so drop a leading heading.
 		if first, rest, ok := strings.Cut(out, "\n"); ok && strings.HasPrefix(first, "#") {
 			out = rest
 		}

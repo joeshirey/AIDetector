@@ -79,11 +79,16 @@ func truncateDiff(d string) string {
 }
 
 // HarvestCommits pulls non-merge, non-bot commits made before `before` from
-// a GitHub repo, with their diffs.
-func HarvestCommits(ctx context.Context, repo string, before time.Time, n int, seen func(id string) bool) ([]Sample, error) {
+// a GitHub repo. With lazy set (pool harvesting), diffs aren't fetched until
+// a sample is promoted for mirroring; see FetchDiff.
+func HarvestCommits(ctx context.Context, repo string, before time.Time, n int, lazy bool, seen func(id string) bool) ([]Sample, error) {
 	var out []Sample
 	var subjects []string // recent human subjects, used as style examples for mirrors
-	for page := 1; len(out) < n && page <= 10; page++ {
+	maxPages := 10
+	if lazy {
+		maxPages = 30
+	}
+	for page := 1; len(out) < n && page <= maxPages; page++ {
 		raw, err := gh(ctx, "api", fmt.Sprintf("repos/%s/commits?until=%s&per_page=100&page=%d", repo, before.Format(time.RFC3339), page))
 		if err != nil {
 			return out, err
@@ -125,14 +130,14 @@ func HarvestCommits(ctx context.Context, repo string, before time.Time, n int, s
 				skipCommitRE.MatchString(subject) || len(strings.Fields(msg)) < 2 || seen(id) {
 				continue
 			}
-			diff, err := gh(ctx, "api", "repos/"+repo+"/commits/"+c.SHA, "-H", "Accept: application/vnd.github.diff")
-			if err != nil || len(diff) == 0 {
+			sm := Sample{
+				ID: id, Kind: "commit", Source: "github:" + repo, Text: text.Normalize("commit", msg),
+				Context: map[string]string{"repo": repo, "sha": c.SHA, "style": strings.Join(lastN(subjects, 5), "\n")},
+			}
+			if !lazy && FetchDiff(ctx, &sm) != nil {
 				continue // huge or binary diffs fail; skip them
 			}
-			out = append(out, Sample{
-				ID: id, Kind: "commit", Source: "github:" + repo, Text: text.Normalize("commit", msg),
-				Context: map[string]string{"repo": repo, "diff": truncateDiff(string(diff)), "style": strings.Join(lastN(subjects, 5), "\n")},
-			})
+			out = append(out, sm)
 			subjects = append(subjects, subject)
 		}
 	}
@@ -140,9 +145,9 @@ func HarvestCommits(ctx context.Context, repo string, before time.Time, n int, s
 }
 
 // HarvestPRs pulls merged, non-bot PRs with real descriptions.
-func HarvestPRs(ctx context.Context, repo string, before time.Time, n int, seen func(id string) bool) ([]Sample, error) {
+func HarvestPRs(ctx context.Context, repo string, before time.Time, n int, lazy bool, seen func(id string) bool) ([]Sample, error) {
 	raw, err := gh(ctx, "pr", "list", "--repo", repo, "--state", "merged",
-		"--search", "merged:<"+before.Format("2006-01-02"), "--limit", fmt.Sprint(n*3),
+		"--search", "merged:<"+before.Format("2006-01-02"), "--limit", fmt.Sprint(n*4+40),
 		"--json", "number,title,body,author")
 	if err != nil {
 		return nil, err
@@ -169,16 +174,39 @@ func HarvestPRs(ctx context.Context, repo string, before time.Time, n int, seen 
 		if pr.Author.IsBot || botRE.MatchString(pr.Author.Login) || len(strings.Fields(body)) < 25 || seen(id) {
 			continue
 		}
-		diff, err := gh(ctx, "pr", "diff", fmt.Sprint(pr.Number), "--repo", repo)
-		if err != nil || len(diff) == 0 {
+		sm := Sample{
+			ID: id, Kind: "pr", Source: "github:" + repo, Text: text.Normalize("pr", body),
+			Context: map[string]string{"repo": repo, "title": pr.Title, "number": fmt.Sprint(pr.Number)},
+		}
+		if !lazy && FetchDiff(ctx, &sm) != nil {
 			continue
 		}
-		out = append(out, Sample{
-			ID: id, Kind: "pr", Source: "github:" + repo, Text: text.Normalize("pr", body),
-			Context: map[string]string{"repo": repo, "title": pr.Title, "diff": truncateDiff(string(diff))},
-		})
+		out = append(out, sm)
 	}
 	return out, nil
+}
+
+// FetchDiff fills in the diff for a commit or PR sample harvested lazily.
+func FetchDiff(ctx context.Context, sm *Sample) error {
+	if sm.Context["diff"] != "" || (sm.Kind != "commit" && sm.Kind != "pr") {
+		return nil
+	}
+	repo := sm.Context["repo"]
+	var diff []byte
+	var err error
+	if sm.Kind == "commit" {
+		diff, err = gh(ctx, "api", "repos/"+repo+"/commits/"+sm.Context["sha"], "-H", "Accept: application/vnd.github.diff")
+	} else {
+		diff, err = gh(ctx, "pr", "diff", sm.Context["number"], "--repo", repo)
+	}
+	if err != nil {
+		return err
+	}
+	if len(diff) == 0 {
+		return fmt.Errorf("%s: empty diff", sm.ID)
+	}
+	sm.Context["diff"] = truncateDiff(string(diff))
+	return nil
 }
 
 const mediumURL = "https://huggingface.co/datasets/fabiochiu/medium-articles/resolve/main/medium_articles.csv"
@@ -193,7 +221,9 @@ var workTags = map[string]bool{
 
 // HarvestMedium streams the Medium articles CSV and keeps work/tech posts of
 // a readable length. It stops reading as soon as it has enough.
-func HarvestMedium(ctx context.Context, before time.Time, n int, seen func(id string) bool) ([]Sample, error) {
+// phase picks which every-7th row to sample, so the pool (phase 3) and the
+// original harvest (phase 0) draw different articles.
+func HarvestMedium(ctx context.Context, before time.Time, n, phase int, seen func(id string) bool) ([]Sample, error) {
 	req, _ := http.NewRequestWithContext(ctx, "GET", mediumURL, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -218,7 +248,7 @@ func HarvestMedium(ctx context.Context, before time.Time, n int, seen func(id st
 		row++
 		// Take every 7th match so we sample across the file, not one author's run.
 		ts, err := time.Parse("2006-01-02", rec[4][:min(10, len(rec[4]))])
-		if err != nil || !ts.Before(before) || row%7 != 0 {
+		if err != nil || !ts.Before(before) || row%7 != phase {
 			continue
 		}
 		words := len(strings.Fields(rec[1]))

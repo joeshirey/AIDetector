@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -51,6 +52,9 @@ var phraseSets = []phraseSet{
 	{"sales_language", "sales language (§16)", 1, regexp.MustCompile(words(`nestled`, `in the heart of`, `breathtaking`, `must-visit`, `stunning`, `renowned`, `diverse array`, `commitment to`, `rich (?:history|heritage|tradition|culture)`, `exemplifies`))},
 	{"copula_avoidance", "avoiding is/are/has (§18)", 1.5, regexp.MustCompile(words(`serves as`, `stands as`, `functions as`, `operates as`, `boasts`, `acts as a`))},
 	{"knowledge_disclaimers", "knowledge-limit disclaimers and corrective framings (§23, mid-2026)", 0.5, regexp.MustCompile(words(`based on (?:the )?available information`, `not (?:publicly available|widely documented|extensively documented)`, `while specific details`, `does not establish`, `should not be confused with`, `should be (?:treated|read|understood) as [^.]{1,40} rather than`))},
+	// From "Forensics for AI Generated Text" (persistent 2026 syntactic artifacts).
+	{"signposts", "mechanical signpost openers (Furthermore, Moreover…)", 1.5, regexp.MustCompile(`(?im)(?:^|[.!?]\s+)(?:furthermore|moreover|additionally|consequently|notably|importantly|ultimately|overall|in summary|in conclusion|to summarize|it(?: i|')s worth noting that|it(?: i|')s important to note that),`)},
+	{"corporate_verbs", "corporate Latinate verbs (utilize, facilitate…)", 2, regexp.MustCompile(words(`utiliz(?:e|es|ed|ing)`, `facilitat(?:e|es|ed|ing)`, `streamlin(?:e|es|ed|ing)`, `empower(?:s|ed|ing)?`, `harness(?:es|ed|ing)?`, `revolutioniz(?:e|es|ed|ing)`, `elevat(?:e|es|ed|ing)`, `optimiz(?:e|es|ed|ing)`, `spearhead(?:s|ed|ing)?`))},
 	{"human_markers", "plain constructions humans use more (Wikipedia: Syntax)", 6, regexp.MustCompile(words(`there (?:is|are|was|were) an?`, `it has an?`, `very`, `perhaps`, `tends? to`, `in order to`, `the fact that`, `all of the`, `a part of`, `as a result of`, `one of the (?:best|worst|most)`, `was the first`, `is the only`, `kind of`, `sort of`, `pretty much`))},
 }
 
@@ -106,7 +110,73 @@ func (*Detector) Detect(_ context.Context, in detect.Input) ([]detect.Signal, er
 	if s, ok := lexicalDiversity(ws); ok {
 		add(s)
 	}
+	if len(ws) >= 100 {
+		add(yulesK(ws))
+		add(mtld(ws))
+	}
 	return out, nil
+}
+
+func lowerAll(ws []string) []string {
+	out := make([]string, len(ws))
+	for i, w := range ws {
+		out[i] = strings.ToLower(w)
+	}
+	return out
+}
+
+// yulesK measures vocabulary repetition independent of length (Yule 1944);
+// higher means more repetitive.
+func yulesK(ws []string) detect.Signal {
+	freq := map[string]int{}
+	for _, w := range lowerAll(ws) {
+		freq[w]++
+	}
+	spectrum := map[int]int{}
+	for _, f := range freq {
+		spectrum[f]++
+	}
+	var s2 float64
+	for m, v := range spectrum {
+		s2 += float64(m*m) * float64(v)
+	}
+	n := float64(len(ws))
+	k := 1e4 * (s2 - n) / (n * n)
+	return detect.Signal{Name: "yules_k", Value: k, AIProb: 0.5, Weight: 0.2,
+		Detail: fmt.Sprintf("Yule's K %.0f (vocabulary repetition; higher is more repetitive)", k)}
+}
+
+// mtld is the Measure of Textual Lexical Diversity (McCarthy & Jarvis 2010):
+// the mean run length that keeps the type-token ratio above 0.72.
+func mtld(ws []string) detect.Signal {
+	lower := lowerAll(ws)
+	pass := func(seq []string) float64 {
+		const threshold = 0.72
+		var factors float64
+		types := map[string]bool{}
+		count := 0
+		for _, w := range seq {
+			count++
+			types[w] = true
+			if float64(len(types))/float64(count) <= threshold {
+				factors++
+				clear(types)
+				count = 0
+			}
+		}
+		if count > 0 {
+			factors += (1 - float64(len(types))/float64(count)) / (1 - threshold)
+		}
+		if factors == 0 {
+			return float64(len(seq))
+		}
+		return float64(len(seq)) / factors
+	}
+	rev := slices.Clone(lower)
+	slices.Reverse(rev)
+	v := (pass(lower) + pass(rev)) / 2
+	return detect.Signal{Name: "mtld", Value: v, AIProb: 0.5, Weight: 0.2,
+		Detail: fmt.Sprintf("MTLD %.0f (lexical diversity; higher is more varied)", v)}
 }
 
 // presence: finding a pattern is evidence of AI, not finding it is weak

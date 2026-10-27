@@ -85,7 +85,9 @@ func (r *Report) walk(ctx context.Context, e *engine.Engine, dir string, kind de
 			}
 			feats := Signals{}
 			for _, s := range res.Signals {
-				feats[s.Name] = s.Value
+				if s.Detector != "sanitizer" {
+					feats[s.Name] = s.Value
+				}
 			}
 			r.Samples = append(r.Samples, Sample{ID: id, Path: path, IsAI: label == "ai", Score: res.Score,
 				Words: res.WordCount, Kind: string(res.Kind), Feats: feats})

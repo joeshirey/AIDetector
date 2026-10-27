@@ -105,3 +105,14 @@ func TestEmbeddedModelsLoad(t *testing.T) {
 		t.Errorf("got %d, %v; want >= 97", res.Score, err)
 	}
 }
+
+func TestTamperingWarning(t *testing.T) {
+	text := "The re​sult of the review was fіne, and the team agreed to ship the change on Monday after one more pass over the tests."
+	res, err := Default().Analyze(context.Background(), detect.Input{Text: text, Kind: detect.KindProse})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Reasons) == 0 || res.Reasons[0].Direction != "warning" {
+		t.Errorf("want a leading warning reason, got %+v", res.Reasons)
+	}
+}

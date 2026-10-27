@@ -29,6 +29,36 @@ type Feature struct {
 	Mean   float64 `json:"mean"`
 	Std    float64 `json:"std"`
 	Weight float64 `json:"weight"`
+	// Typical values in the training corpus, shown to users as reference.
+	HumanMedian float64 `json:"human_median"`
+	AIMedian    float64 `json:"ai_median"`
+}
+
+// Contribution is one feature's share of a score, in log-odds.
+type Contribution struct {
+	Feature
+	Value   float64
+	Present bool
+	Logit   float64
+}
+
+// Contributions breaks Prob's log-odds down by feature.
+func (m *Model) Contributions(feats map[string]float64, words int) []Contribution {
+	out := make([]Contribution, 0, len(m.Features))
+	for _, f := range m.Features {
+		c := Contribution{Feature: f}
+		c.Value, c.Present = feats[f.Name]
+		if f.Name == wordsFeature {
+			c.Value, c.Present = float64(words), true
+			c.Logit = f.Weight * (math.Log1p(float64(words)) - f.Mean) / f.Std
+		} else if c.Present {
+			c.Logit = f.Weight * (c.Value - f.Mean) / f.Std
+		} else {
+			c.Logit = m.Missing[f.Name]
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 const wordsFeature = "log_words"
@@ -91,6 +121,20 @@ func Fit(kind string, rows []Row) *Model {
 		if f.Std < 1e-9 {
 			f.Std = 1
 		}
+		var human, ai []float64
+		for _, r := range rows {
+			if v, ok := r.Feats[f.Name]; ok || f.Name == wordsFeature {
+				if f.Name == wordsFeature {
+					v = float64(r.Words)
+				}
+				if r.IsAI {
+					ai = append(ai, v)
+				} else {
+					human = append(human, v)
+				}
+			}
+		}
+		f.HumanMedian, f.AIMedian = median(human), median(ai)
 	}
 	for i, r := range rows {
 		x[i] = make([]float64, 2*k)
@@ -133,6 +177,15 @@ func Fit(kind string, rows []Row) *Model {
 		m.Missing[m.Features[j].Name] = w[k+j]
 	}
 	return m
+}
+
+func median(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	s := slices.Clone(xs)
+	slices.Sort(s)
+	return s[len(s)/2]
 }
 
 func value(r Row, name string) (float64, bool) {

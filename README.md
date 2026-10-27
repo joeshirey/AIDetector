@@ -23,8 +23,13 @@ claude mcp add --scope user aidetector -- "$PWD/bin/aidetector-mcp"
 | `detect_ai_file` | Score a local `.txt`/`.md` file. |
 | `detect_ai_commits` | Score commit messages in a repo range (e.g. `main..HEAD`). |
 
-Each result includes `score`, `label`, `confidence`, the `signals` behind the
-score, and, for long prose, per-segment scores plus `ai_fraction`.
+Each result includes `score`, `label`, `confidence`, ranked `reasons` (each
+with a direction, an impact level, its contribution to the fitted score, and the
+typical human and AI values from the training corpus), the raw `signals`, and,
+for long prose, per-segment scores plus `ai_fraction`. Before scoring, text is
+sanitized: zero-width characters and look-alike letters (e.g. Cyrillic "а") are
+removed and reported as a warning, since they're used for evasion and also make
+detectors falsely accuse human writers.
 
 ## CLI
 
@@ -85,6 +90,7 @@ toward human writing.
 | pr | merged GitHub PRs | the same title + diff |
 | blog | Medium posts tagged tech/business | a brief extracted from the post |
 | memo | Enron emails (AESLC) | a brief extracted from the email |
+| essay | English-learner essays (Feedback Prize ELL, ICNALE) | a brief extracted from the essay |
 
 ```sh
 go build -o bin/corpus ./cmd/corpus
@@ -93,6 +99,33 @@ bin/corpus harvest              # needs gh auth; writes corpus/<kind>/human + sr
 bin/corpus mirror -j 12         # resumable; writes corpus/<kind>/ai/<model>/
 bin/corpus stats
 ```
+
+### Human pool and hard-negative mining
+
+Growth follows a hard-negative active-learning loop, driven by the model's own
+mistakes rather than random sampling:
+
+```sh
+bin/corpus harvest -pool                 # human-only reserve (adds Go blog posts and learner essays)
+bin/aidetector dist -kind prose corpus/essay/pool   # false-positive rate at scale
+bin/corpus promote -kind blog -n 300 -hard 0.5      # half hardest-to-classify human texts, half random
+bin/corpus mirror -j 12
+```
+
+The pool is never trained on, so what remains in it is a large, free
+false-positive test set, including non-native English writing.
+
+### Eval-only variant sets
+
+```sh
+bin/corpus variant -type polished  -kind blog,memo,pr,essay -n 60   # human test text polished by a model
+bin/corpus variant -type humanized -kind blog,memo,pr,essay -n 60   # AI test text rewritten with the humanizer skill
+bin/aidetector dist -kind prose corpus/blog/ai_polished
+```
+
+These live in `ai_polished/` and `ai_humanized/`, which `fit` and `eval` never
+read. They measure how the detector handles AI-assisted and evasion-rewritten
+text without training on either.
 
 Generators rotate across Claude Opus 5.5, Sonnet 5.5, and Haiku 5.5 (Vertex AI
 when `ANTHROPIC_VERTEX_PROJECT_ID` is set, otherwise the Claude API) and Gemini 3.8
@@ -119,11 +152,22 @@ out-of-fold word-pattern scores so the calibrator doesn't trust an overfit class
 ```sh
 bin/aidetector fit -kind commit corpus/commit
 bin/aidetector fit -kind pr corpus/pr
-bin/aidetector fit -kind prose corpus/blog corpus/memo
+bin/aidetector fit -kind prose corpus/blog corpus/memo corpus/essay
 go build -o bin/aidetector ./cmd/aidetector       # embeds internal/engine/models/*.json
 bin/aidetector eval -split test -kind commit corpus/commit
 bin/aidetector eval -split test -kind commit -heuristic corpus/commit   # compare to hand-set weights
 ```
+
+## Ideas adopted from "Forensics for AI Generated Text"
+
+Adopted: hard-negative mining and a human-only false-positive pool, Unicode sanitization, explanations with direction, impact, and
+reference ranges, signpost and corporate-verb features, Yule's K and MTLD, and an
+eval-only AI-polished set (the report's "AI-assisted" middle category).
+
+Not adopted: hand-set thresholds and fusion weights (the report's burstiness
+ranges don't match 2026 models in our corpus; fitted weights replace them), and
+LLM-as-a-judge. Deferred: Binoculars / Fast-DetectGPT (needs token
+log-probabilities from an open model) and token-level span tagging.
 
 ## Roadmap
 
