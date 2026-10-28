@@ -187,8 +187,8 @@ bin/corpus stats
 
 ### Human pool and hard-negative mining
 
-Growth follows a hard-negative active-learning loop, driven by the model's own
-mistakes rather than random sampling:
+Growth follows a hard-negative active-learning loop: it's driven by the
+model's own mistakes rather than random sampling:
 
 ```sh
 bin/corpus harvest -pool                 # human-only reserve (adds Go blog posts and learner essays)
@@ -250,7 +250,8 @@ on (`corpus harvest -pool -out corpus_fresh -exclude corpus`).
 
 ## Ideas adopted from "Forensics for AI Generated Text"
 
-Adopted: hard-negative mining and a human-only false-positive pool, Unicode sanitization, explanations with direction, impact, and
+Adopted: hard-negative mining and a human-only false-positive pool, Unicode
+sanitization, explanations with direction, impact, and
 reference ranges, signpost and corporate-verb features, Yule's K and MTLD, and an
 eval-only AI-polished set (the report's "AI-assisted" middle category).
 
