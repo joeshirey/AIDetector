@@ -6,6 +6,7 @@
 //	aidetector fit  -kind K DIR...
 //	aidetector dist [-kind K] DIR...   score distribution of a folder (e.g. the human pool)
 //	aidetector thresholds -kind K DIR...  set label cutoffs from human-only text
+//	aidetector setup [-client all|claude|codex|antigravity] [-dry-run]  register the MCP server and install the skill
 package main
 
 import (
@@ -27,6 +28,7 @@ import (
 	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/eval"
 	"github.com/joeshirey/AIDetector/internal/mcpserver"
+	"github.com/joeshirey/AIDetector/internal/setup"
 	"github.com/joeshirey/AIDetector/internal/split"
 )
 
@@ -35,7 +37,7 @@ func main() {
 	cmd := "detect"
 	if len(args) > 0 {
 		switch args[0] {
-		case "detect", "commits", "eval", "fit", "dist", "thresholds":
+		case "detect", "commits", "eval", "fit", "dist", "thresholds", "setup":
 			cmd, args = args[0], args[1:]
 		case "-h", "-help", "--help", "help":
 			usage()
@@ -56,6 +58,8 @@ func main() {
 		err = runDist(args)
 	case "thresholds":
 		err = runThresholds(args)
+	case "setup":
+		err = runSetup(args)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "aidetector:", err)
@@ -65,6 +69,7 @@ func main() {
 
 func usage() {
 	fmt.Fprint(os.Stderr, `usage:
+  aidetector setup [-client all|claude|codex|antigravity] [-dry-run] [-skill-only] [-scorer URL]
   aidetector [detect] [-kind auto|prose|commit|pr] [-json] [file|-]
   aidetector commits [-repo DIR] [-n N] [-json] [range]
   aidetector eval [-kind K] [-split train|test] [-heuristic] [-json] DIR...   (DIR/human/*, DIR/ai/*)
@@ -427,6 +432,58 @@ func runThresholds(args []string) error {
 	fmt.Printf("  mixed     >= %3d   held-out human at or above: %.1f%%\n", t.Mixed, 100*t.HumanAtMixed)
 	fmt.Printf("  likely AI >= %3d   held-out human at or above: %.1f%%\n", t.LikelyAI, 100*t.HumanAtLikelyAI)
 	fmt.Printf("  AI        >= %3d   held-out human at or above: %.1f%%\n", t.AI, 100*t.HumanAtAI)
+	return nil
+}
+
+// runSetup registers aidetector-mcp with agent clients and installs the
+// ai-text-detection skill for each.
+func runSetup(args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ExitOnError)
+	client := fs.String("client", "all", "all, claude, codex, or antigravity (comma-separated)")
+	mcpPath := fs.String("mcp", "", "path to aidetector-mcp (default: next to this binary)")
+	dryRun := fs.Bool("dry-run", false, "print what would change without changing anything")
+	skillOnly := fs.Bool("skill-only", false, "install the skill without registering the MCP server")
+	scorer := fs.String("scorer", "", "optional token-probability scorer URL to pass to the server")
+	fs.Parse(args)
+
+	o := setup.Options{Skill: true, Server: !*skillOnly, DryRun: *dryRun, Out: os.Stdout}
+	if o.Server {
+		p := *mcpPath
+		if p == "" {
+			var err error
+			if p, err = setup.DefaultMCPPath(); err != nil {
+				return err
+			}
+		}
+		abs, err := filepath.Abs(p)
+		if err != nil {
+			return err
+		}
+		o.MCPPath = abs
+		if *scorer != "" {
+			o.Env = []string{"AIDETECTOR_SCORER_URL=" + *scorer}
+		}
+	}
+	var clients []setup.Client
+	if *client == "all" {
+		clients = setup.Clients
+	} else {
+		for _, name := range strings.Split(*client, ",") {
+			c, ok := setup.Find(strings.TrimSpace(name))
+			if !ok {
+				return fmt.Errorf("unknown client %q (want claude, codex, or antigravity)", name)
+			}
+			clients = append(clients, c)
+		}
+	}
+	for _, c := range clients {
+		if err := setup.Install(c, o); err != nil {
+			return err
+		}
+	}
+	if !*dryRun {
+		fmt.Println("Restart your agent clients to pick up the changes.")
+	}
 	return nil
 }
 

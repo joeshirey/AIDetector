@@ -14,10 +14,28 @@ for it once:
 gh auth login && gh auth setup-git            # or any Git credential setup for github.com
 go env -w GOPRIVATE='github.com/joeshirey/*'
 go install github.com/joeshirey/AIDetector/cmd/aidetector-mcp@latest
-go install github.com/joeshirey/AIDetector/cmd/aidetector@latest   # optional CLI
+go install github.com/joeshirey/AIDetector/cmd/aidetector@latest
 
-# Register with Claude Code (user scope = available in every project)
+# Register the MCP server and install the skill in Claude Code, Codex, and Antigravity
+"$(go env GOPATH)/bin/aidetector" setup                 # or -client claude,codex; -dry-run to preview
+```
+
+`setup` uses each client's own CLI (`claude mcp add`, `codex mcp add`, `agy mcp
+add`), so re-running it updates rather than duplicates. Clients whose CLI isn't
+installed are skipped with the manual command printed. It also installs the
+`ai-text-detection` skill (embedded in the binary; source in
+`internal/setup/skill/SKILL.md`) into `~/.claude/skills`, `~/.codex/skills`
+(or `$CODEX_HOME/skills`), and `~/.gemini/config/skills`. The skill tells
+agents when to use the tools, which `kind` to pass, how to read scores and
+reasons, and how to report results responsibly. The server also sends a short
+version of that guidance to every client when it connects.
+
+Manual registration, if you prefer:
+
+```sh
 claude mcp add --scope user aidetector -- "$(go env GOPATH)/bin/aidetector-mcp"
+codex mcp add aidetector -- "$(go env GOPATH)/bin/aidetector-mcp"
+agy mcp add aidetector "$(go env GOPATH)/bin/aidetector-mcp"
 ```
 
 The binaries are self-contained: models are embedded, nothing is downloaded at

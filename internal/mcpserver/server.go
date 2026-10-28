@@ -47,9 +47,20 @@ type commitsResult struct {
 	Flagged   int           `json:"flagged" jsonschema:"commits scoring 60 or higher"`
 }
 
+// instructions reach every client when it connects, so agents interpret
+// results responsibly even without the companion skill installed.
+const instructions = `aidetector scores English text from 0 (human) to 100 (AI-written) and explains why.
+
+- Pass kind when you know it: prose (blogs, memos, reports, emails, essays), pr, or commit.
+- Labels: 80+ AI, 60-79 likely AI, 40-59 mixed (possibly AI-assisted), below 40 likely human. At 60, about 2% of human writing of the same kind scores as high, so a result is evidence, not proof.
+- "too short to judge" means the text is under the minimum length (50 words for prose, 25 for PRs); say so rather than reporting the score.
+- Explain results with the top two or three reasons. Always mention a "warning" reason: hidden or look-alike characters were removed.
+- Single commit scores are weak evidence; report patterns across commits.
+- Describe the text, not the person ("reads as likely AI-written", not "they used AI"), and don't present a score as the sole basis for consequential decisions.`
+
 // New builds the MCP server with all detection tools registered.
 func New(e *engine.Engine, version string) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "aidetector", Version: version}, nil)
+	s := mcp.NewServer(&mcp.Implementation{Name: "aidetector", Version: version}, &mcp.ServerOptions{Instructions: instructions})
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "detect_ai_text",

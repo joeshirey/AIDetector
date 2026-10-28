@@ -58,9 +58,7 @@ func (g *chatGen) Generate(ctx context.Context, prompt string) (string, error) {
 				} `json:"message"`
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
-			Error *struct {
-				Message string `json:"message"`
-			} `json:"error"`
+			Error json.RawMessage `json:"error"` // an object from OpenAI, a plain string from some local servers
 		}
 		err = json.NewDecoder(resp.Body).Decode(&out)
 		resp.Body.Close()
@@ -70,8 +68,8 @@ func (g *chatGen) Generate(ctx context.Context, prompt string) (string, error) {
 			continue
 		case err != nil:
 			return "", fmt.Errorf("%s: %w", g.model, err)
-		case out.Error != nil:
-			return "", fmt.Errorf("%s: %s", g.model, out.Error.Message)
+		case len(out.Error) > 0 && string(out.Error) != "null":
+			return "", fmt.Errorf("%s: %s", g.model, errorText(out.Error))
 		case len(out.Choices) == 0:
 			return "", fmt.Errorf("%s: no choices", g.model)
 		}
@@ -86,4 +84,20 @@ func (g *chatGen) Generate(ctx context.Context, prompt string) (string, error) {
 		return strings.TrimSpace(thinkRE.ReplaceAllString(c.Message.Content, "")), nil
 	}
 	return "", lastErr
+}
+
+// errorText extracts a message from an error that may be a string or an
+// object with a "message" field.
+func errorText(raw json.RawMessage) string {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return s
+	}
+	var o struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(raw, &o) == nil && o.Message != "" {
+		return o.Message
+	}
+	return string(raw)
 }
