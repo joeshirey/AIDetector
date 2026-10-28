@@ -37,3 +37,5 @@ go.work.sum
 __pycache__/
 *.pyc
 /corpus_tech/
+/internal/engine/testdata/fixtures/
+/corpus_nontech/

@@ -74,7 +74,7 @@ the same thing for a blog post as it does for a commit:
 |---|---|---|
 | 80 to 100 | AI | about 0.5% |
 | 60 to 79 | likely AI | about 2% |
-| 40 to 59 | mixed (possibly AI-assisted) | about 10% |
+| 40 to 59 | inconclusive | about 5% |
 | 20 to 39 | likely human | |
 | 0 to 19 | human | |
 
@@ -84,9 +84,16 @@ You also get:
   direction and a size. Most also show typical values for human and AI text.
 - `segments` and `ai_fraction` for long prose. These score the text in
   chunks of about 200 words (handy when only part of a document is AI).
+  Short chunks swing more than whole documents, so segments have their own
+  cutoffs: a human segment reaches 60 about as often as a human document does.
 - A `warning` reason if there were hidden characters or look-alike letters in
   the text. They get stripped out first. People use them to fool detectors
-  (they also trip up detectors on perfectly innocent text).
+  (they also trip up detectors on perfectly innocent text). There's also a
+  warning when most of the AI evidence comes from one embedded or quoted block,
+  like an agent-written file pasted into a post. It gives the score without
+  that block.
+- An `info` reason when code, tables, YAML front matter, or headings and
+  captions were left out. Only the prose gets scored.
 
 Prose has to be at least 50 words and PR descriptions at least 25. Anything
 shorter comes back as "too short to judge", because the models never saw text
@@ -110,19 +117,21 @@ For false positives I used fresh human text. None of it was in training and
 this half wasn't used to pick the cutoffs either. The commits and PRs are from
 10 repos the corpus had never touched:
 
-| Human texts | Labeled mixed | Labeled likely AI or AI | Labeled AI |
-|---|---|---|---|
-| Learner essays (275) | 3% | 0% | 0% |
-| Blog posts (289) | 6% | 1% | 0% |
-| Technical blog posts (693)* | 4% | under 1% | 0% |
-| Commit messages (282) | 4% | 1% | 0% |
-| PR descriptions (157) | 4% | 2% | 0% |
-| Memos and emails (293) | 17% | 6% | 3% |
+| Human texts | Labeled inconclusive | Labeled likely AI or AI | Labeled AI | Segments at 60+ |
+|---|---|---|---|---|
+| Learner essays (275) | 0% | 0% | 0% | 0% |
+| Blog posts (289) | 2% | 1% | 0.3% | 0.5% |
+| Technical blog posts (364)* | 1% | 0.5% | 0.3% | 0.5% |
+| Non-tech Medium, pre-2021 (760) | 4% | 1.1% | 0.5% | 1.2% |
+| Commit messages (282) | 2% | 1% | 0% | |
+| PR descriptions (157) | 3% | 2% | 0% | |
+| Memos and emails (293) | 4.5% | 6% | 3% | |
 
 \* Posts by Richard Seroter, Scott Hanselman, and technical Medium authors.
 Other posts by the same authors are in training, so this row is optimistic.
-For an engineering writer the model has never seen, expect closer to 15%
-"mixed" (that's what I got when I left Seroter out of training entirely).
+Expect more false positives for an engineering writer the model has never
+seen. When I left Seroter out of training entirely, 15% of his posts landed
+in the middle band (that was under the older, wider band).
 
 Prose uses one set of cutoffs for all its genres. That's why memos run a bit
 high and blogs a bit low.
@@ -132,15 +141,19 @@ A few other results:
 - I ran AI text past the [humanizer](https://github.com/blader/humanizer)
   skill. Between 86% and 99% of it still got labeled likely AI or AI.
 - Human writing that's been polished by AI is all over the map. For blogs and
-  memos, about a quarter of it comes out "mixed" and around 40% comes out
+  memos, 13 to 18% of it comes out "inconclusive" and around 40% comes out
   "AI". A full polish changes most of the wording.
 - AI models it hasn't seen can be a weak spot. When I trained with all the
   Claude models left out (and then all the Gemini ones), prose AUROC on the
   missing family dropped to 0.84 to 0.87. Qwen3.6 went the other way: before
   any Qwen text was in training, 98% to 100% of its prose already scored as AI.
-- Technical writing used to drift toward "mixed". Adding engineering blogs to
+- Technical writing used to drift toward the middle of the scale. Adding engineering blogs to
   training cut that by about a third for authors it had never seen, and AI
   detection on technical text went up slightly.
+- When I pasted about 400 words of AI text into the middle of a human post,
+  a segment caught it 87.5% of the time. Segments are tuned to be as cautious
+  as whole documents. Looser segment cutoffs would catch 96% of those inserts
+  but would also flag 2 to 3% of segments in purely human posts.
 
 ## Limits
 
@@ -164,6 +177,13 @@ The final score comes from a logistic regression. Its inputs are about 35
 measured features plus one learned word-pattern score. That output gets mapped
 onto the scale above. There's no neural network involved in scoring (a
 700-word document takes about 14 ms).
+
+Before any of that, prose gets cleaned up. Code (fenced, indented, or pasted
+plain), tables (including ones pasted as one long line), YAML front matter,
+and short heading or caption lines are left out. Sentences glued together by
+lost line breaks ("why.In 1938") get split, with guards for URLs, file names,
+versions, abbreviations, and dotted names like `Microsoft.BizTalk.Pipeline`.
+Training and detection use the same cleanup.
 
 The features come from four detectors:
 
@@ -205,6 +225,7 @@ The human text all predates ChatGPT's launch in November 2022:
 | commit, pr | GitHub commits and merged PRs from 30 open-source repos |
 | blog | Medium posts tagged tech or business ([fabiochiu/medium-articles](https://huggingface.co/datasets/fabiochiu/medium-articles)), plus Go blog posts for the human pool |
 | blog (technical) | Posts by [Richard Seroter](https://seroter.com) and [Scott Hanselman](https://www.hanselman.com), and Medium posts with engineering tags (`harvest -source seroter`, `hanselman`, or `medium-tech`) |
+| blog (non-tech pool) | Medium posts from before 2021 with no tech or business tags (`harvest -pool -source medium-nontech`). Used only to measure false positives and set cutoffs, never for training. |
 | memo | Enron emails ([AESLC](https://huggingface.co/datasets/Yale-LILY/aeslc)) |
 | essay | English-learner essays (Feedback Prize ELL and ICNALE) |
 
@@ -249,12 +270,26 @@ go build -o bin/aidetector ./cmd/aidetector   # embeds the new models
 
 # set label cutoffs on fresh human text the models haven't seen
 bin/corpus harvest -pool -out corpus_fresh -exclude corpus
-bin/aidetector thresholds -kind prose corpus_fresh/blog/pool corpus_fresh/memo/pool corpus_fresh/essay/pool
+bin/aidetector thresholds -kind prose -only documents corpus_fresh/blog/pool corpus_fresh/memo/pool corpus_fresh/essay/pool
+bin/aidetector thresholds -kind prose -only segments corpus_fresh/blog/pool corpus_fresh/memo/pool corpus_fresh/essay/pool corpus_tech/blog/pool corpus_nontech/blog/pool
 go build -o bin/aidetector ./cmd/aidetector
+bin/aidetector fixtures      # regression check: known-human fixtures plus a report-only monitoring set
 
 bin/aidetector eval -split test -kind prose corpus/blog corpus/memo corpus/essay corpus_tech/blog
 bin/aidetector dist -kind prose corpus_fresh/blog/pool   # false-positive rate
 ```
+
+Segment cutoffs use a wider pool than document cutoffs because they need a
+lot of long text. They're matched to the documents the segments came from:
+at each level, a human segment reaches the cutoff about as often as its
+document reaches the document cutoff.
+
+`aidetector fixtures` downloads the regression fixtures listed in
+`internal/engine/testdata/fixtures.json` into a gitignored cache (the articles
+belong to their authors). It fails if more than one known-human article
+scores 60+ or any of their segments hits 80. The monitoring set is 2026 posts
+of unknown authorship. It's report-only and never used for training or
+calibration.
 
 `promote` is the hard-negative step. It finds the human texts the current
 model gets most wrong (plus some random ones) and moves those into training.

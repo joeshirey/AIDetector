@@ -96,12 +96,22 @@ func splitProse(s string) []string {
 }
 
 // Windows groups consecutive paragraphs into chunks of at least target words,
-// so long documents can be scored piece by piece.
+// so long documents can be scored piece by piece. Paragraphs much longer than
+// target (common when pasted text lost its line breaks) are split at
+// sentence boundaries first.
 func Windows(s string, target int) []string {
 	var out []string
 	var cur []string
 	n := 0
+	var paras []string
 	for _, p := range Paragraphs(s) {
+		if len(Words(p)) > target*3/2 {
+			paras = append(paras, splitLong(p, target)...)
+		} else {
+			paras = append(paras, p)
+		}
+	}
+	for _, p := range paras {
 		cur = append(cur, p)
 		n += len(Words(p))
 		if n >= target {
@@ -116,6 +126,26 @@ func Windows(s string, target int) []string {
 		} else {
 			out = append(out, strings.Join(cur, "\n\n"))
 		}
+	}
+	return out
+}
+
+// splitLong breaks one long paragraph into sentence-aligned pieces of about
+// target words.
+func splitLong(p string, target int) []string {
+	var out []string
+	var cur []string
+	n := 0
+	for _, s := range splitProse(strings.Join(strings.Fields(p), " ")) {
+		cur = append(cur, s)
+		n += len(Words(s))
+		if n >= target {
+			out = append(out, strings.Join(cur, " "))
+			cur, n = nil, 0
+		}
+	}
+	if len(cur) > 0 {
+		out = append(out, strings.Join(cur, " "))
 	}
 	return out
 }

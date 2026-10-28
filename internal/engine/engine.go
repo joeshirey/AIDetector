@@ -24,16 +24,16 @@ import (
 
 // Result is what the CLI and MCP tools return.
 type Result struct {
-	Score      int             `json:"score" jsonschema:"0-100 on a scale shared by all kinds: 40+ mixed, 60+ likely AI, 80+ AI; at most ~10%, ~2%, and ~0.5% of held-out human text of the same kind reaches each"`
+	Score      int             `json:"score" jsonschema:"0-100 on a scale shared by all kinds: 40+ inconclusive, 60+ likely AI, 80+ AI; at most ~5%, ~2%, and ~0.5% of held-out human text of the same kind reaches each"`
 	RawScore   int             `json:"raw_score" jsonschema:"the model's own 0-100 probability before mapping onto the shared scale"`
-	Label      string          `json:"label" jsonschema:"human, likely human, mixed (possibly AI-assisted), likely AI, AI, or too short to judge"`
+	Label      string          `json:"label" jsonschema:"human, likely human, inconclusive, likely AI, AI, or too short to judge"`
 	Confidence string          `json:"confidence" jsonschema:"low, medium, or high; mostly driven by text length"`
 	Kind       detect.Kind     `json:"kind"`
 	WordCount  int             `json:"word_count"`
 	Reasons    []Reason        `json:"reasons" jsonschema:"why the text got its score, strongest first"`
 	Signals    []detect.Signal `json:"signals" jsonschema:"raw measurements from every detector"`
 	Segments   []Segment       `json:"segments,omitempty" jsonschema:"per-chunk scores for longer documents"`
-	AIFraction *float64        `json:"ai_fraction,omitempty" jsonschema:"share of segments at or above the likely-AI cutoff"`
+	AIFraction *float64        `json:"ai_fraction,omitempty" jsonschema:"share of segments scoring 60+ on the segment scale (calibrated separately from whole documents)"`
 	Cutoffs    Thresholds      `json:"cutoffs" jsonschema:"raw-score cutoffs for this kind that map to 40, 60, and 80, with measured human rates"`
 	Scorer     string          `json:"scorer,omitempty" jsonschema:"token-probability model used, if the local scorer was available"`
 	Notes      []string        `json:"notes,omitempty"`
@@ -42,7 +42,7 @@ type Result struct {
 // Reason explains one factor behind a score.
 type Reason struct {
 	Signal    string   `json:"signal"`
-	Direction string   `json:"direction" jsonschema:"AI, human, or warning"`
+	Direction string   `json:"direction" jsonschema:"AI, human, warning, or info"`
 	Impact    string   `json:"impact" jsonschema:"decisive, high, medium, or low"`
 	Logit     float64  `json:"log_odds" jsonschema:"contribution to the score in log-odds; positive pushes toward AI"`
 	Observed  float64  `json:"observed"`
@@ -52,10 +52,11 @@ type Reason struct {
 }
 
 type Segment struct {
-	Index   int    `json:"index"`
-	Score   int    `json:"score"`
-	Words   int    `json:"words"`
-	Preview string `json:"preview"`
+	Index    int    `json:"index"`
+	Score    int    `json:"score"`
+	RawScore int    `json:"raw_score" jsonschema:"the model's own probability for this chunk before calibration"`
+	Words    int    `json:"words"`
+	Preview  string `json:"preview"`
 }
 
 type Engine struct {
@@ -75,7 +76,7 @@ type optional interface{ Optional() bool }
 // scores mean the same thing for every kind. The Human* fields record the
 // share measured on the other half of that text.
 type Thresholds struct {
-	Mixed    int `json:"mixed" jsonschema:"at or above: mixed (possibly AI-assisted)"`
+	Mixed    int `json:"mixed" jsonschema:"at or above: inconclusive"`
 	LikelyAI int `json:"likely_ai" jsonschema:"at or above: likely AI"`
 	AI       int `json:"ai" jsonschema:"at or above: AI"`
 
@@ -113,7 +114,7 @@ func Label(score int) string {
 	case score >= 60:
 		return "likely AI"
 	case score >= 40:
-		return "mixed (possibly AI-assisted)"
+		return "inconclusive"
 	case score >= 20:
 		return "likely human"
 	default:
@@ -136,6 +137,17 @@ func (e *Engine) Thresholds(k detect.Kind) Thresholds {
 		return t
 	}
 	return DefaultThresholds
+}
+
+// SegmentThresholds returns the cutoffs for 200-word segments. Short windows
+// score more extreme than whole documents, so they get their own
+// calibration ("prose.segment"); without one they fall back to the
+// document cutoffs.
+func (e *Engine) SegmentThresholds(k detect.Kind) Thresholds {
+	if t, ok := e.thresholds[e.ThresholdKey(k)+".segment"]; ok {
+		return t
+	}
+	return e.Thresholds(k)
 }
 
 // Scorer returns the token-probability scorer in use, or nil.
@@ -207,10 +219,41 @@ const TooShort = "too short to judge"
 const segmentWords = 200
 
 func (e *Engine) Analyze(ctx context.Context, in detect.Input) (Result, error) {
+	res, err := e.analyze(ctx, in)
+	if err != nil || res.Kind != detect.KindProse || res.Score < 60 {
+		return res, err
+	}
+	// If one embedded or quoted block carries most of the AI evidence, say so
+	// instead of letting it silently set the label.
+	clean, _ := text.Sanitize(in.Text)
+	for _, b := range text.EmbeddedBlocks(clean) {
+		without, err := e.analyze(ctx, detect.Input{Text: b.Without, Kind: detect.KindProse})
+		if err != nil {
+			return res, err
+		}
+		if (without.Score < 60 || res.Score-without.Score >= 20) && without.Label != TooShort {
+			res.Reasons = append([]Reason{{
+				Signal: "embedded_block", Direction: "warning", Impact: "high", Observed: float64(b.Words),
+				Detail: fmt.Sprintf("most of the AI evidence comes from one %s (%d words, starting %q); without it this text scores %d (%s)",
+					b.What, b.Words, b.Preview, without.Score, without.Label),
+			}}, res.Reasons...)
+			break
+		}
+	}
+	return res, nil
+}
+
+func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 	clean, tamper := text.Sanitize(in.Text)
 	in.Text = strings.TrimSpace(clean)
 	if in.Kind == "" || in.Kind == detect.KindAuto {
 		in.Kind = detect.GuessKind(in.Text)
+	}
+	// Score only the prose: code, tables, front matter, and label lines are
+	// excluded, and sentences glued together by lost line breaks are split.
+	var excluded text.Exclusions
+	if in.Kind == detect.KindProse {
+		in.Text, excluded = text.PrepareProse(in.Text)
 	}
 	res := Result{Kind: in.Kind, WordCount: len(text.Words(in.Text))}
 	if e.lm != nil {
@@ -226,6 +269,12 @@ func (e *Engine) Analyze(ctx context.Context, in detect.Input) (Result, error) {
 	signals, err := e.signals(ctx, in)
 	if err != nil {
 		return res, err
+	}
+	if n := excluded.Total(); n > 0 {
+		signals = append(signals, detect.Signal{
+			Name: "excluded_content", Detector: "prepare", Value: float64(n), AIProb: 0.5, Weight: 0,
+			Detail: exclusionDetail(excluded),
+		})
 	}
 	if tamper.Any() {
 		signals = append(signals, detect.Signal{
@@ -291,11 +340,12 @@ func (e *Engine) segments(ctx context.Context, in detect.Input, res *Result) err
 			return err
 		}
 		n := len(text.Words(w))
-		score := int(math.Round(e.scale(in.Kind, e.score(in.Kind, s, n), s)))
+		raw := e.score(in.Kind, s, n)
+		score := int(math.Round(e.scaleWith(e.SegmentThresholds(in.Kind), raw, s)))
 		if score >= 60 {
 			flagged++
 		}
-		res.Segments = append(res.Segments, Segment{Index: i, Score: score, Words: n, Preview: preview(w)})
+		res.Segments = append(res.Segments, Segment{Index: i, Score: score, RawScore: int(math.Round(raw)), Words: n, Preview: preview(w)})
 	}
 	frac := float64(flagged) / float64(len(windows))
 	res.AIFraction = &frac
@@ -328,7 +378,11 @@ func (e *Engine) score(k detect.Kind, signals []detect.Signal, words int) float6
 // scale maps a raw score onto the shared scale. A decisive tell still
 // guarantees at least 97.
 func (e *Engine) scale(k detect.Kind, raw float64, signals []detect.Signal) float64 {
-	scaled := e.Thresholds(k).Scale(raw)
+	return e.scaleWith(e.Thresholds(k), raw, signals)
+}
+
+func (e *Engine) scaleWith(t Thresholds, raw float64, signals []detect.Signal) float64 {
+	scaled := t.Scale(raw)
 	for _, s := range signals {
 		if s.Decisive {
 			return max(scaled, 97)
@@ -340,7 +394,7 @@ func (e *Engine) scale(k detect.Kind, raw float64, signals []detect.Signal) floa
 // reasons ranks the factors behind a score. With a fitted model these are the
 // model's actual per-feature contributions; otherwise the hand-set weights.
 func (e *Engine) reasons(k detect.Kind, signals []detect.Signal, words int) []Reason {
-	var out []Reason
+	var out, info []Reason
 	byName := map[string]detect.Signal{}
 	for _, s := range signals {
 		byName[s.Name] = s
@@ -349,6 +403,8 @@ func (e *Engine) reasons(k detect.Kind, signals []detect.Signal, words int) []Re
 			out = append(out, Reason{Signal: s.Name, Direction: "AI", Impact: "decisive", Logit: 10, Observed: s.Value, Detail: s.Detail})
 		case s.Detector == "sanitizer":
 			out = append(out, Reason{Signal: s.Name, Direction: "warning", Impact: "high", Observed: s.Value, Detail: s.Detail})
+		case s.Detector == "prepare":
+			info = append(info, Reason{Signal: s.Name, Direction: "info", Impact: "low", Observed: s.Value, Detail: s.Detail})
 		}
 	}
 	add := func(r Reason) {
@@ -372,7 +428,7 @@ func (e *Engine) reasons(k detect.Kind, signals []detect.Signal, words int) []Re
 	if m := e.models[k]; m != nil {
 		feats := map[string]float64{}
 		for _, s := range signals {
-			if !s.Decisive && s.Detector != "sanitizer" {
+			if !s.Decisive && s.Detector != "sanitizer" && s.Detector != "prepare" {
 				feats[s.Name] = s.Value
 			}
 		}
@@ -423,7 +479,20 @@ func (e *Engine) reasons(k detect.Kind, signals []detect.Signal, words int) []Re
 	if len(out) > 8 {
 		out = out[:8]
 	}
-	return out
+	return append(out, info...)
+}
+
+func exclusionDetail(x text.Exclusions) string {
+	var parts []string
+	for _, p := range []struct {
+		n    int
+		what string
+	}{{x.Code, "code"}, {x.Tables, "tables"}, {x.FrontMatter, "front matter"}, {x.Labels, "headings and labels"}} {
+		if p.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d of %s", p.n, p.what))
+		}
+	}
+	return fmt.Sprintf("excluded %d words that aren't prose before scoring (%s)", x.Total(), strings.Join(parts, ", "))
 }
 
 // combine merges signals in log-odds space. Dividing by sqrt(total weight)

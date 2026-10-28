@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Technical blogs by individual engineers, for human writing that's
@@ -155,6 +156,49 @@ func HarvestHanselman(ctx context.Context, years []int, n int, seen func(string)
 		}
 	}
 	return out, nil
+}
+
+// NonTechBefore is the date cutoff for the non-tech Medium pool, well before
+// ChatGPT and before the Medium dataset's later, more mixed years.
+var NonTechBefore = time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// HarvestMediumNonTech collects Medium posts dated before 2021 whose tags
+// match neither workTags nor techTags: general-interest human writing for a
+// held-out false-positive pool (not training). skip excludes article IDs,
+// such as regression fixtures.
+func HarvestMediumNonTech(ctx context.Context, n, phase int, skip map[string]bool, seen func(id string) bool) ([]Sample, error) {
+	keep := func(tags []string) bool { return !anyWorkTag(tags) && !anyTechTag(tags) && !anyTechTagLoose(tags) }
+	return harvestMediumFiltered(ctx, NonTechBefore, n, phase, "medium-nontech", keep, 300, skip, seen)
+}
+
+// anyTechTagLoose catches engineering tags that the stricter techTags set
+// leaves out on purpose (broad ones like "technology").
+func anyTechTagLoose(tags []string) bool {
+	for _, t := range tags {
+		if techTags[strings.ToLower(t)] {
+			return true
+		}
+	}
+	return false
+}
+
+var stopwordRE = regexp.MustCompile(`(?i)\b(the|and|of|to|a|in|is|that|it|for|you|was|with|on|as|have|but|be|are|this|not|i)\b`)
+
+// isEnglish is a cheap filter: mostly ASCII letters and a normal share of
+// common English function words.
+func isEnglish(s string) bool {
+	letters, ascii := 0, 0
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			letters++
+			if r < 128 {
+				ascii++
+			}
+		}
+	}
+	words := len(strings.Fields(s))
+	return letters > 0 && float64(ascii)/float64(letters) > 0.97 &&
+		words > 0 && float64(len(stopwordRE.FindAllStringIndex(s, -1)))/float64(words) > 0.25
 }
 
 // techTags narrows Medium to engineering topics (the original harvest also

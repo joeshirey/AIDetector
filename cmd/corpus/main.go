@@ -27,6 +27,7 @@ import (
 	"github.com/joeshirey/AIDetector/internal/corpus"
 	"github.com/joeshirey/AIDetector/internal/detect"
 	"github.com/joeshirey/AIDetector/internal/engine"
+	"github.com/joeshirey/AIDetector/internal/fixtures"
 )
 
 var kinds = []string{"commit", "pr", "blog", "memo", "essay"}
@@ -60,7 +61,7 @@ func main() {
 	variant := fs.String("type", "", "variant: polished or humanized")
 	exclude := fs.String("exclude", "", "harvest: skip samples already in these other corpus directories, comma-separated (for fresh, unbiased pools)")
 	prefix := fs.String("prefix", "", "promote: only consider pool samples whose id starts with this (e.g. seroter-)")
-	source := fs.String("source", "", "harvest -kind blog: seroter, hanselman, or medium-tech instead of the default sources")
+	source := fs.String("source", "", "harvest -kind blog: seroter, hanselman, medium-tech, or medium-nontech instead of the default sources")
 	phase := fs.Int("phase", 3, "harvest -pool: which every-7th Medium row to sample (0 is the training harvest)")
 	repos := fs.String("repos", strings.Join(defaultRepos, ","), "harvest: GitHub repos for commits and PRs")
 	gens := fs.String("gens", defaultGens, "mirror/ping: generators as provider:model, comma-separated")
@@ -157,8 +158,14 @@ func harvestBlogSource(ctx context.Context, store *corpus.Store, exclude []*corp
 		samples, err = corpus.HarvestHanselman(ctx, years, n, seen)
 	case "medium-tech":
 		samples, err = corpus.HarvestMediumTech(ctx, corpus.Cutoff, n, phase, seen)
+	case "medium-nontech":
+		skip, ferr := fixtureArticleIDs("internal/engine/testdata/fixtures.json")
+		if ferr != nil {
+			return ferr
+		}
+		samples, err = corpus.HarvestMediumNonTech(ctx, n, phase, skip, seen)
 	default:
-		return fmt.Errorf("unknown source %q (want seroter, hanselman, or medium-tech)", source)
+		return fmt.Errorf("unknown source %q (want seroter, hanselman, medium-tech, or medium-nontech)", source)
 	}
 	for _, s := range samples {
 		var serr error
@@ -173,6 +180,22 @@ func harvestBlogSource(ctx context.Context, store *corpus.Store, exclude []*corp
 	}
 	log.Printf("blog %s: harvested %d", source, len(samples))
 	return err
+}
+
+// fixtureArticleIDs lists the Medium article IDs used as regression
+// fixtures, so pools never include them.
+func fixtureArticleIDs(path string) (map[string]bool, error) {
+	l, err := fixtures.Load(path)
+	if err != nil {
+		return nil, err
+	}
+	ids := map[string]bool{}
+	for _, f := range append(l.KnownHuman, l.Monitoring...) {
+		if i := strings.LastIndex(strings.TrimRight(f.URL, "/"), "-"); i >= 0 {
+			ids[strings.TrimRight(f.URL, "/")[i+1:]] = true
+		}
+	}
+	return ids, nil
 }
 
 func harvest(ctx context.Context, store *corpus.Store, exclude []*corpus.Store, kinds []string, n int, pool bool, mediumPhase int, repos []string) error {

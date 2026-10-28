@@ -24,6 +24,9 @@ explains why. Scores are probabilistic evidence, never proof.
    words.
 4. **For long documents, read `segments` and `ai_fraction`.** They show which
    parts read as AI, which matters for documents with mixed authorship.
+   Segments are calibrated separately so a segment at 60+ is about as rare in
+   human writing as a document at 60+. Even so, one hot segment in a long,
+   otherwise-human document is weak evidence on its own.
 
 ## Reading a result
 
@@ -31,14 +34,19 @@ explains why. Scores are probabilistic evidence, never proof.
 |---|---|---|
 | 80–100 | AI | about 0.5% of human writing of this kind scores this high |
 | 60–79 | likely AI | about 2% of human writing reaches 60 |
-| 40–59 | mixed (possibly AI-assisted) | about 10% of human writing reaches 40 |
+| 40–59 | inconclusive | about 5% of human writing reaches 40 |
 | 0–39 | likely human / human | |
 
 - `reasons` lists what drove the score, strongest first. Each has a
   direction (AI or human), an impact, and, where available, typical values
   for human and AI text. Use the top two or three when explaining.
-- A reason with direction `warning` means hidden or look-alike characters were
-  removed before scoring. Always mention it: someone may have altered the text.
+- A reason with direction `warning` flags something to tell the user about:
+  hidden or look-alike characters were removed (someone may have altered the
+  text), or most of the AI evidence comes from one embedded or quoted block
+  (for example a pasted agent-generated document). For the embedded-block
+  warning, report the score both with and without the block.
+- A reason with direction `info` says how many words of code, tables, front
+  matter, or headings were left out of scoring. Mention it when it's large.
 - A reason with impact `decisive` (for example a `Co-Authored-By` AI trailer,
   or "as an AI language model") is near-certain evidence.
 - Ignore `raw_score` and `cutoffs` unless the user asks how scoring works.

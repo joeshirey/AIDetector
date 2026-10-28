@@ -24,8 +24,9 @@ func Normalize(kind, s string) string {
 	case "commit", "pr":
 		return StripLinks(s)
 	case "memo", "prose":
-		// Fenced code isn't prose; the other detectors already skip it.
-		return StripEnvelope(StripLinks(StripCode(s)))
+		// Code, tables, front matter, and labels aren't prose (PrepareProse).
+		prose, _ := PrepareProse(s)
+		return StripEnvelope(StripLinks(prose))
 	}
 	return s
 }

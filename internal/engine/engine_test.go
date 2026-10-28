@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/joeshirey/AIDetector/internal/detect"
@@ -146,5 +147,31 @@ func TestTooShort(t *testing.T) {
 	res, _ = Default().Analyze(context.Background(), detect.Input{Text: "As an AI language model, I can't share opinions on this topic.", Kind: detect.KindProse})
 	if res.Label != "AI" {
 		t.Errorf("decisive short text got %q", res.Label)
+	}
+}
+
+func TestSegmentThresholdsFallBack(t *testing.T) {
+	e := &Engine{thresholds: map[string]Thresholds{"prose": {Mixed: 20, LikelyAI: 50, AI: 65}}}
+	if got := e.SegmentThresholds(detect.KindProse); got.LikelyAI != 50 {
+		t.Errorf("without prose.segment, segments should use document cutoffs; got %+v", got)
+	}
+	e.thresholds["prose.segment"] = Thresholds{Mixed: 45, LikelyAI: 76, AI: 83}
+	if got := e.SegmentThresholds(detect.KindProse); got.LikelyAI != 76 {
+		t.Errorf("got %+v, want the segment cutoffs", got)
+	}
+}
+
+func TestEmbeddedBlockReason(t *testing.T) {
+	human := "I spent most of last week fighting our deploy pipeline, and honestly it was my own fault for skipping the staging step. "
+	skill := "## Workflow\n\n1. **Assess**: Evaluate the user's requirements against key architectural dimensions and constraints.\n2. **Select**: Map the workload to the primary database skill and check for relevant guidance.\n\n> 📖 Consult the detailed [decision matrix](./references/matrix.md) for complete comparison tables.\n\n### Step 2: Select the Target Skills\n\n- **Install**: Seamlessly download and install the specialized skill into the local workspace.\n- **Execute**: Deliver a comprehensive, well-architected solution that ensures robust, scalable outcomes."
+	text := strings.Repeat(human, 3) + "\n\n" + skill + "\n\n" + strings.Repeat(human, 3)
+	res, err := Default().Analyze(context.Background(), detect.Input{Text: text, Kind: detect.KindProse})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range res.Reasons {
+		if r.Signal == "embedded_block" && res.Score < 60 {
+			t.Errorf("embedded_block reason on a text scoring %d", res.Score)
+		}
 	}
 }

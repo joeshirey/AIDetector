@@ -233,6 +233,10 @@ func HarvestMediumTech(ctx context.Context, before time.Time, n, phase int, seen
 }
 
 func harvestMedium(ctx context.Context, before time.Time, n, phase int, source string, keep func([]string) bool, seen func(id string) bool) ([]Sample, error) {
+	return harvestMediumFiltered(ctx, before, n, phase, source, keep, 250, nil, seen)
+}
+
+func harvestMediumFiltered(ctx context.Context, before time.Time, n, phase int, source string, keep func([]string) bool, minWords int, skip map[string]bool, seen func(id string) bool) ([]Sample, error) {
 	req, _ := http.NewRequestWithContext(ctx, "GET", mediumURL, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -262,7 +266,10 @@ func harvestMedium(ctx context.Context, before time.Time, n, phase int, source s
 		}
 		words := len(strings.Fields(rec[1]))
 		tags := parseTags(rec[5])
-		if words < 250 || words > 1500 || !keep(tags) {
+		if words < minWords || words > 1500 || !keep(tags) || skip[mediumArticleID(rec[2])] {
+			continue
+		}
+		if source == "medium-nontech" && !isEnglish(rec[1]) {
 			continue
 		}
 		id := fmt.Sprintf("medium-%07d", row)
@@ -293,6 +300,15 @@ func cleanMedium(text, title string) string {
 	}
 	text = photoCreditRE.ReplaceAllString(text, "")
 	return strings.TrimSpace(blankRunRE.ReplaceAllString(text, "\n\n"))
+}
+
+// mediumArticleID is the trailing hex ID on a Medium article URL.
+func mediumArticleID(u string) string {
+	u = strings.TrimRight(strings.TrimSpace(u), "/")
+	if i := strings.LastIndex(u, "-"); i >= 0 {
+		return u[i+1:]
+	}
+	return u
 }
 
 func parseTags(s string) []string {

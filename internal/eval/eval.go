@@ -85,7 +85,7 @@ func (r *Report) walk(ctx context.Context, e *engine.Engine, dir string, kind de
 			}
 			feats := Signals{}
 			for _, s := range res.Signals {
-				if s.Detector != "sanitizer" {
+				if s.Detector != "sanitizer" && s.Detector != "prepare" {
 					feats[s.Name] = s.Value
 				}
 			}

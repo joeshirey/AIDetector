@@ -1,0 +1,31 @@
+{
+  "note": "Regression fixtures. Article text is not committed (it belongs to its authors); `aidetector fixtures -fetch` downloads it into testdata/fixtures/, which is gitignored. known_human fails the check if more than one scores 60+ or a segment scores far above the segment-60 cutoff. monitoring is report-only: never train or calibrate on it.",
+  "known_human": [
+    {"id": "seroter-2007-esb-onramp", "source": "seroter", "url": "https://seroter.com/2007/01/11/validating-content-for-generic-esb-on-ramp/"},
+    {"id": "seroter-2020-buildpacks", "source": "seroter", "url": "https://seroter.com/2020/06/16/build-and-deploy-secure-containers-to-a-serverless-runtime-using-google-cloud-buildpacks-and-this-six-line-file/"},
+    {"id": "medium-headline-blunder", "source": "medium-csv", "url": "https://entrepreneurshandbook.co/the-1-headline-blunder-every-writer-makes-weve-all-done-it-e1aa3563dff3"},
+    {"id": "medium-trinity-boss", "source": "medium-csv", "url": "https://medium.com/@jake_hixon/the-3-in-1-trinity-boss-82ec2248d302"},
+    {"id": "medium-writing-letters", "source": "medium-csv", "url": "https://medium.com/writing-heals/why-writing-letters-helps-you-heal-ab5b8d83b168"},
+    {"id": "medium-new-moon-sagittarius", "source": "medium-csv", "url": "https://medium.com/soulzine/astrology-new-moon-in-sagittarius-december-2020-793f063e7402"},
+    {"id": "medium-clickbait-mistakes", "source": "medium-csv", "url": "https://medium.com/swlh/are-you-making-these-clickbait-mistakes-in-your-headline-70782a915e82"},
+    {"id": "medium-grow-in-winter", "source": "medium-csv", "url": "https://medium.com/@stefandrew/what-to-grow-in-winter-sprouted-seeds-microgreens-baby-plants-8530d95a16a3"},
+    {"id": "medium-revising", "source": "medium-csv", "url": "https://medium.com/create-make-write/i-hate-revising-i-love-revising-221ed12b13b1"},
+    {"id": "medium-nonverbal-verbal", "source": "medium-csv", "url": "https://medium.com/@nandajurela/knowing-it-and-knowing-about-it-the-nonverbal-and-the-verbal-f8e6eb94480d"},
+    {"id": "medium-palestinian-solidarity", "source": "medium-csv", "url": "https://medium.com/gidra-returns/south-koreans-speak-out-for-palestinian-solidarity-ea669e96d758"},
+    {"id": "medium-quilt-pattern", "source": "medium-csv", "url": "https://medium.com/high-museum-of-art/get-creative-at-home-design-a-quilt-pattern-with-inspiration-from-mary-lee-bendolphs-work-clothes-ce42a2366dbb"}
+  ],
+  "monitoring": [
+    {"id": "mon-water-protein", "source": "medium-rss", "url": "https://medium.com/@mba25288/even-water-has-protein-now-are-we-getting-healthier-or-just-more-marketable-40fc00082a50", "reported": 82},
+    {"id": "mon-outpatient-rehab", "source": "medium-rss", "url": "https://medium.com/@annierajpoot958/what-to-consider-before-purchasing-an-outpatient-rehab-center-86538e8d4310", "reported": 93},
+    {"id": "mon-wish-for-peace", "source": "medium-rss", "url": "https://medium.com/@maryam-ikhlaq/a-wish-for-peace-cd70458ff643", "reported": 73},
+    {"id": "mon-kodaikanal-cabs", "source": "medium-rss", "url": "https://medium.com/@eagleeyesiva/kodaikanal-cabs-your-trusted-travel-partner-for-exploring-the-beautiful-hill-station-of-75c300ce4378", "reported": 83},
+    {"id": "mon-hope-sandoval", "source": "medium-rss", "url": "https://medium.com/@rajenputrap/hope-sandoval-doesnt-tell-you-everything-will-be-okay-29ae029e4c5a", "reported": 91},
+    {"id": "mon-writing-freedom", "source": "medium-rss", "url": "https://medium.com/@sas232/yes-writing-gave-me-freedom-78c05ffb7480", "reported": 1},
+    {"id": "mon-digital-detox", "source": "medium-rss", "url": "https://medium.com/@maankhushi189/digital-detox-is-it-time-to-unplug-c8f40729a653", "reported": 98},
+    {"id": "mon-raindrop", "source": "medium-rss", "url": "https://medium.com/@ikhushippatel/the-secret-life-of-a-raindrop-b98b199e13b7", "reported": 99},
+    {"id": "mon-baghdad-battery", "source": "medium-rss", "url": "https://medium.com/@samyhassan68/the-2-000-year-old-battery-that-shouldnt-exist-a-clay-pot-found-near-baghdad-looks-exactly-like-85a26bbeae44", "reported": 73},
+    {"id": "mon-golan-on-fire", "source": "medium-rss", "url": "https://medium.com/@douglasfede/the-golan-on-fire-4219aec6b564", "reported": 30},
+    {"id": "mon-seroter-2025-vibing", "source": "seroter", "url": "https://seroter.com/2025/08/28/vibing-options-for-whoever-you-are/", "reported": 17},
+    {"id": "mon-seroter-2026-agent-skills", "source": "seroter", "url": "https://seroter.com/2026/08/31/you-can-just-find-and-use-agent-skills-mid-session/", "reported": 81}
+  ]
+}
