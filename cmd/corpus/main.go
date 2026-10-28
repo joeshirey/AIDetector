@@ -58,7 +58,9 @@ func main() {
 	pool := fs.Bool("pool", false, "harvest: collect into the human-only reserve pool")
 	hard := fs.Float64("hard", 0.5, "promote: share of promotions taken from the highest-scoring (hard-negative) pool texts")
 	variant := fs.String("type", "", "variant: polished or humanized")
-	exclude := fs.String("exclude", "", "harvest: skip samples already in this other corpus directory (for fresh, unbiased pools)")
+	exclude := fs.String("exclude", "", "harvest: skip samples already in these other corpus directories, comma-separated (for fresh, unbiased pools)")
+	prefix := fs.String("prefix", "", "promote: only consider pool samples whose id starts with this (e.g. seroter-)")
+	source := fs.String("source", "", "harvest -kind blog: seroter, hanselman, or medium-tech instead of the default sources")
 	phase := fs.Int("phase", 3, "harvest -pool: which every-7th Medium row to sample (0 is the training harvest)")
 	repos := fs.String("repos", strings.Join(defaultRepos, ","), "harvest: GitHub repos for commits and PRs")
 	gens := fs.String("gens", defaultGens, "mirror/ping: generators as provider:model, comma-separated")
@@ -76,13 +78,19 @@ func main() {
 	var err error
 	switch os.Args[1] {
 	case "harvest":
-		var other *corpus.Store
-		if *exclude != "" {
-			other = &corpus.Store{Root: *exclude}
+		var others []*corpus.Store
+		for _, d := range strings.Split(*exclude, ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				others = append(others, &corpus.Store{Root: d})
+			}
 		}
-		err = harvest(ctx, store, other, selected, *n, *pool, *phase, strings.Split(*repos, ","))
+		if *source != "" {
+			err = harvestBlogSource(ctx, store, others, *source, *n, *pool, *phase)
+		} else {
+			err = harvest(ctx, store, others, selected, *n, *pool, *phase, strings.Split(*repos, ","))
+		}
 	case "promote":
-		err = promote(ctx, store, selected, *n, *hard)
+		err = promote(ctx, store, selected, *n, *hard, *prefix)
 	case "variant":
 		err = variants(ctx, store, selected, *variant, *gens, *workers, max(*n, 1))
 	case "mirror":
@@ -120,7 +128,54 @@ func usage() {
 	os.Exit(2)
 }
 
-func harvest(ctx context.Context, store, exclude *corpus.Store, kinds []string, n int, pool bool, mediumPhase int, repos []string) error {
+// harvestBlogSource collects technical blog posts from one named source.
+func harvestBlogSource(ctx context.Context, store *corpus.Store, exclude []*corpus.Store, source string, n int, pool bool, phase int) error {
+	if n == 0 {
+		n = 500
+	}
+	seen := func(id string) bool {
+		if store.Has("blog", id) {
+			return true
+		}
+		for _, x := range exclude {
+			if x.Has("blog", id) {
+				return true
+			}
+		}
+		return false
+	}
+	var samples []corpus.Sample
+	var err error
+	switch source {
+	case "seroter":
+		samples, err = corpus.HarvestSeroter(ctx, corpus.Cutoff, n, seen)
+	case "hanselman":
+		var years []int
+		for y := 2008; y <= 2021; y++ { // whole years before the cutoff
+			years = append(years, y)
+		}
+		samples, err = corpus.HarvestHanselman(ctx, years, n, seen)
+	case "medium-tech":
+		samples, err = corpus.HarvestMediumTech(ctx, corpus.Cutoff, n, phase, seen)
+	default:
+		return fmt.Errorf("unknown source %q (want seroter, hanselman, or medium-tech)", source)
+	}
+	for _, s := range samples {
+		var serr error
+		if pool {
+			serr = store.SavePool(s)
+		} else {
+			serr = store.SaveHuman(s)
+		}
+		if serr != nil {
+			return serr
+		}
+	}
+	log.Printf("blog %s: harvested %d", source, len(samples))
+	return err
+}
+
+func harvest(ctx context.Context, store *corpus.Store, exclude []*corpus.Store, kinds []string, n int, pool bool, mediumPhase int, repos []string) error {
 	defaults := map[string]int{"commit": 400, "pr": 240, "blog": 250, "memo": 250, "essay": 0}
 	if pool {
 		defaults = map[string]int{"commit": 1500, "pr": 600, "blog": 1500, "memo": 1500, "essay": 2000}
@@ -144,7 +199,17 @@ func harvest(ctx context.Context, store, exclude *corpus.Store, kinds []string, 
 		if want == 0 {
 			want = defaults[k]
 		}
-		seen := func(id string) bool { return store.Has(k, id) || (exclude != nil && exclude.Has(k, id)) }
+		seen := func(id string) bool {
+			if store.Has(k, id) {
+				return true
+			}
+			for _, x := range exclude {
+				if x.Has(k, id) {
+					return true
+				}
+			}
+			return false
+		}
 		var samples []corpus.Sample
 		var err error
 		switch k {
@@ -209,12 +274,18 @@ func harvest(ctx context.Context, store, exclude *corpus.Store, kinds []string, 
 // share are the human texts the current model scores as most AI-like (hard
 // negatives, as in active-learning detector training); the rest are random so the
 // corpus stays representative.
-func promote(ctx context.Context, store *corpus.Store, kinds []string, n int, hard float64) error {
+func promote(ctx context.Context, store *corpus.Store, kinds []string, n int, hard float64, prefix string) error {
 	e := engine.Default()
 	for _, k := range kinds {
-		pool, err := store.Pool(k)
+		all0, err := store.Pool(k)
 		if err != nil {
 			return err
+		}
+		var pool []corpus.Sample
+		for _, s := range all0 {
+			if strings.HasPrefix(s.ID, prefix) {
+				pool = append(pool, s)
+			}
 		}
 		if len(pool) == 0 || n == 0 {
 			continue
@@ -232,6 +303,7 @@ func promote(ctx context.Context, store *corpus.Store, kinds []string, n int, ha
 			all[i] = scored{s, res.Score}
 		}
 		slices.SortFunc(all, func(a, b scored) int { return cmp.Compare(b.score, a.score) })
+		hardest := all[0].score
 		nHard := int(float64(n) * hard)
 		picked := slices.Clone(all[:min(nHard, len(all))])
 		rest := all[len(picked):]
@@ -257,7 +329,7 @@ func promote(ctx context.Context, store *corpus.Store, kinds []string, n int, ha
 			promoted++
 		}
 		log.Printf("%s: pool %d (%d scored 50+, hardest %d), promoted %d (%d hard negatives)",
-			k, len(all), flagged, all[0].score, promoted, min(nHard, promoted))
+			k, len(all), flagged, hardest, promoted, min(nHard, promoted))
 	}
 	return nil
 }

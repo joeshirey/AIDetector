@@ -36,3 +36,4 @@ go.work.sum
 /corpus_fresh/
 __pycache__/
 *.pyc
+/corpus_tech/

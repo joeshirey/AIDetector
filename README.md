@@ -102,21 +102,27 @@ The test split is 20% of the corpus:
 
 | Kind | AUROC | AI caught with 1% of human text flagged |
 |---|---|---|
-| Prose (blogs, memos, essays) | 0.989 | 89% |
-| PR descriptions | 0.985 | 85% |
-| Commit messages | 0.856 | 40% |
+| Prose (blogs, technical blogs, memos, essays) | 0.996 | 95% |
+| PR descriptions | 0.990 | 87% |
+| Commit messages | 0.862 | 35% |
 
 For false positives I used fresh human text. None of it was in training and
 this half wasn't used to pick the cutoffs either. The commits and PRs are from
 10 repos the corpus had never touched:
 
-| Human texts | Labeled likely AI or AI | Labeled AI |
-|---|---|---|
-| Learner essays (275) | 0% | 0% |
-| Blog posts (289) | 1% | 0% |
-| Commit messages (282) | 1% | 0% |
-| PR descriptions (157) | 2% | 0% |
-| Memos and emails (293) | 5% | 2% |
+| Human texts | Labeled mixed | Labeled likely AI or AI | Labeled AI |
+|---|---|---|---|
+| Learner essays (275) | 3% | 0% | 0% |
+| Blog posts (289) | 6% | 1% | 0% |
+| Technical blog posts (693)* | 4% | under 1% | 0% |
+| Commit messages (282) | 4% | 1% | 0% |
+| PR descriptions (157) | 4% | 2% | 0% |
+| Memos and emails (293) | 17% | 6% | 3% |
+
+\* Posts by Richard Seroter, Scott Hanselman, and technical Medium authors.
+Other posts by the same authors are in training, so this row is optimistic.
+For an engineering writer the model has never seen, expect closer to 15%
+"mixed" (that's what I got when I left Seroter out of training entirely).
 
 Prose uses one set of cutoffs for all its genres. That's why memos run a bit
 high and blogs a bit low.
@@ -124,14 +130,17 @@ high and blogs a bit low.
 A few other results:
 
 - I ran AI text past the [humanizer](https://github.com/blader/humanizer)
-  skill. Between 87% and 99% of it still got labeled likely AI or AI.
+  skill. Between 86% and 99% of it still got labeled likely AI or AI.
 - Human writing that's been polished by AI is all over the map. For blogs and
-  memos, a quarter to a third of it comes out "mixed" and close to half comes
-  out "AI". A full polish changes most of the wording.
-- AI models it hasn't seen are the weak spot. I tried training with all the
-  Claude models left out (and then all the Gemini ones). Prose AUROC on the
-  missing family dropped to 0.84 to 0.87. I'm adding more model families to
-  deal with this.
+  memos, about a quarter of it comes out "mixed" and around 40% comes out
+  "AI". A full polish changes most of the wording.
+- AI models it hasn't seen can be a weak spot. When I trained with all the
+  Claude models left out (and then all the Gemini ones), prose AUROC on the
+  missing family dropped to 0.84 to 0.87. Qwen3.6 went the other way: before
+  any Qwen text was in training, 98% to 100% of its prose already scored as AI.
+- Technical writing used to drift toward "mixed". Adding engineering blogs to
+  training cut that by about a third for authors it had never seen, and AI
+  detection on technical text went up slightly.
 
 ## Limits
 
@@ -146,8 +155,8 @@ It can't tell a light AI edit from a full AI rewrite (polished text tends to
 read as AI). Formal writing and templates (form letters, PR templates) also
 score higher than casual writing does.
 
-It knows Claude and Gemini best. Text from other model families will get
-lower scores than it should. English only. No code.
+It's trained on Claude, Gemini, and Qwen. Text from other model families (GPT,
+Llama, Grok) may score lower than it should. English only. No code.
 
 ## How it works
 
@@ -195,10 +204,12 @@ The human text all predates ChatGPT's launch in November 2022:
 |---|---|
 | commit, pr | GitHub commits and merged PRs from 30 open-source repos |
 | blog | Medium posts tagged tech or business ([fabiochiu/medium-articles](https://huggingface.co/datasets/fabiochiu/medium-articles)), plus Go blog posts for the human pool |
+| blog (technical) | Posts by [Richard Seroter](https://seroter.com) and [Scott Hanselman](https://www.hanselman.com), and Medium posts with engineering tags (`harvest -source seroter`, `hanselman`, or `medium-tech`) |
 | memo | Enron emails ([AESLC](https://huggingface.co/datasets/Yale-LILY/aeslc)) |
 | essay | English-learner essays (Feedback Prize ELL and ICNALE) |
 
-These datasets each have their own terms. Check them if you plan to
+These sources each have their own terms (the blog posts belong to their
+authors). The corpus isn't redistributed. Check the terms if you plan to
 redistribute anything built from them.
 
 Each human sample gets an AI "mirror". I hand a model the same diff (or PR
@@ -226,7 +237,12 @@ bin/corpus harvest -pool             # human-only reserve that's never trained o
 bin/corpus promote -kind blog -n 300 # move the pool's hardest human texts into training
 bin/corpus mirror -add -gens lmstudio:qwen3.6-35b-a3b -limit 100   # add a model family
 
-bin/aidetector fit -kind prose corpus/blog corpus/memo corpus/essay
+# technical blogs: harvest into their own pool, move a random 300 per source into training, mirror
+bin/corpus harvest -pool -out corpus_tech -kind blog -source seroter -exclude corpus,corpus_fresh
+bin/corpus promote -out corpus_tech -kind blog -n 300 -hard 0 -prefix seroter-
+bin/corpus mirror -out corpus_tech -kind blog -j 12
+
+bin/aidetector fit -kind prose corpus/blog corpus/memo corpus/essay corpus_tech/blog
 bin/aidetector fit -kind pr corpus/pr
 bin/aidetector fit -kind commit corpus/commit
 go build -o bin/aidetector ./cmd/aidetector   # embeds the new models
@@ -236,7 +252,7 @@ bin/corpus harvest -pool -out corpus_fresh -exclude corpus
 bin/aidetector thresholds -kind prose corpus_fresh/blog/pool corpus_fresh/memo/pool corpus_fresh/essay/pool
 go build -o bin/aidetector ./cmd/aidetector
 
-bin/aidetector eval -split test -kind prose corpus/blog corpus/memo corpus/essay
+bin/aidetector eval -split test -kind prose corpus/blog corpus/memo corpus/essay corpus_tech/blog
 bin/aidetector dist -kind prose corpus_fresh/blog/pool   # false-positive rate
 ```
 
@@ -284,7 +300,8 @@ scorer/               experimental Binoculars service (Python, MLX)
 ## Credits
 
 The patterns come from Wikipedia's Signs of AI writing (WikiProject AI
-Cleanup) and the humanizer skill. The zero-shot methods are from Binoculars
+Cleanup) and the humanizer skill. Thanks to Richard Seroter and Scott
+Hanselman, whose years of engineering posts made the technical training data. The zero-shot methods are from Binoculars
 (Hans et al., 2024) and Fast-DetectGPT (Bao et al., 2024). The mirrored
 training data and hard-negative mining follow published work on supervised
 AI-text detection.

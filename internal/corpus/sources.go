@@ -224,6 +224,15 @@ var workTags = map[string]bool{
 // phase picks which every-7th row to sample, so the pool (phase 3) and the
 // original harvest (phase 0) draw different articles.
 func HarvestMedium(ctx context.Context, before time.Time, n, phase int, seen func(id string) bool) ([]Sample, error) {
+	return harvestMedium(ctx, before, n, phase, "medium", anyWorkTag, seen)
+}
+
+// HarvestMediumTech is HarvestMedium restricted to engineering tags.
+func HarvestMediumTech(ctx context.Context, before time.Time, n, phase int, seen func(id string) bool) ([]Sample, error) {
+	return harvestMedium(ctx, before, n, phase, "medium-tech", anyTechTag, seen)
+}
+
+func harvestMedium(ctx context.Context, before time.Time, n, phase int, source string, keep func([]string) bool, seen func(id string) bool) ([]Sample, error) {
 	req, _ := http.NewRequestWithContext(ctx, "GET", mediumURL, nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -253,7 +262,7 @@ func HarvestMedium(ctx context.Context, before time.Time, n, phase int, seen fun
 		}
 		words := len(strings.Fields(rec[1]))
 		tags := parseTags(rec[5])
-		if words < 250 || words > 1500 || !anyWorkTag(tags) {
+		if words < 250 || words > 1500 || !keep(tags) {
 			continue
 		}
 		id := fmt.Sprintf("medium-%07d", row)
@@ -261,7 +270,7 @@ func HarvestMedium(ctx context.Context, before time.Time, n, phase int, seen fun
 			continue
 		}
 		out = append(out, Sample{
-			ID: id, Kind: "blog", Source: "medium", Text: cleanMedium(rec[1], rec[0]),
+			ID: id, Kind: "blog", Source: source, Text: cleanMedium(rec[1], rec[0]),
 			Context: map[string]string{"title": rec[0], "tags": strings.Join(tags, ", "), "words": fmt.Sprint(words)},
 		})
 	}

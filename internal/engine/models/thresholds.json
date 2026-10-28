@@ -1,27 +1,28 @@
 {
  "commit": {
-  "mixed": 65,
-  "likely_ai": 83,
-  "ai": 86,
-  "human_at_mixed": 0.03900709219858156,
+  "mixed": 69,
+  "likely_ai": 85,
+  "ai": 90,
+  "human_at_mixed": 0.04964539007092199,
   "human_at_likely_ai": 0.0070921985815602835,
+  "human_at_ai": 0.0035460992907801418,
   "calibrated_on": 318
  },
  "pr": {
   "mixed": 41,
-  "likely_ai": 64,
-  "ai": 78,
-  "human_at_mixed": 0.07006369426751592,
+  "likely_ai": 62,
+  "ai": 73,
+  "human_at_mixed": 0.06369426751592357,
   "human_at_likely_ai": 0.01910828025477707,
   "calibrated_on": 143
  },
  "prose": {
-  "mixed": 14,
-  "likely_ai": 44,
-  "ai": 56,
-  "human_at_mixed": 0.11318553092182031,
-  "human_at_likely_ai": 0.021003500583430573,
-  "human_at_ai": 0.008168028004667444,
+  "mixed": 19,
+  "likely_ai": 47,
+  "ai": 58,
+  "human_at_mixed": 0.11435239206534423,
+  "human_at_likely_ai": 0.024504084014002333,
+  "human_at_ai": 0.010501750291715286,
   "calibrated_on": 943
  }
 }
