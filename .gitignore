@@ -34,3 +34,5 @@ go.work.sum
 /bin/
 /corpus/
 /corpus_fresh/
+__pycache__/
+*.pyc

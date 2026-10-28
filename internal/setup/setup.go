@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -154,7 +155,11 @@ func DefaultMCPPath() (string, error) {
 		return "", err
 	}
 	self, _ = filepath.EvalSymlinks(self)
-	p := filepath.Join(filepath.Dir(self), "aidetector-mcp")
+	name := "aidetector-mcp"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	p := filepath.Join(filepath.Dir(self), name)
 	if _, err := os.Stat(p); err != nil {
 		return "", errors.New("aidetector-mcp not found next to this binary; install it or pass -mcp /path/to/aidetector-mcp")
 	}

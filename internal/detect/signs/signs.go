@@ -72,8 +72,9 @@ func (*Detector) Detect(_ context.Context, in detect.Input) ([]detect.Signal, er
 		s.Detector = name
 		out = append(out, s)
 	}
-	// Checked at any length: one hit is decisive.
-	if m := residueRE.FindString(body); m != "" {
+	// Checked at any length: one hit is decisive, unless the phrase is quoted
+	// (text discussing "as an AI language model" isn't using it).
+	if m := unquotedMatch(residueRE, body); m != "" {
 		add(detect.Signal{Name: "chatbot_residue", Value: 1, AIProb: 0.99, Weight: 3, Decisive: true,
 			Detail: fmt.Sprintf("chatbot wrapper text: %q (§22)", m)})
 	}
@@ -179,6 +180,20 @@ func mtld(ws []string) detect.Signal {
 	v := (pass(lower) + pass(rev)) / 2
 	return detect.Signal{Name: "mtld", Value: v, AIProb: 0.5, Weight: 0.2,
 		Detail: fmt.Sprintf("MTLD %.0f (lexical diversity; higher is more varied)", v)}
+}
+
+// unquotedMatch returns the first match of re that isn't immediately inside
+// quotes or backticks.
+func unquotedMatch(re *regexp.Regexp, s string) string {
+	for _, loc := range re.FindAllStringIndex(s, -1) {
+		before := strings.TrimRight(s[:loc[0]], " ")
+		if before != "" && strings.ContainsAny(before[len(before)-1:], "\"'`") ||
+			strings.HasSuffix(before, "“") || strings.HasSuffix(before, "‘") {
+			continue
+		}
+		return s[loc[0]:loc[1]]
+	}
+	return ""
 }
 
 // presence: finding a pattern is evidence of AI, not finding it is weak

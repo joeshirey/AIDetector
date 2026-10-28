@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -11,6 +12,9 @@ import (
 // Fake client CLIs record their arguments, so Install runs for real against
 // a temporary home without touching any actual client configuration.
 func TestInstall(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake CLIs are shell scripts")
+	}
 	home, bin := t.TempDir(), t.TempDir()
 	log := filepath.Join(bin, "calls.log")
 	for _, cli := range []string{"claude", "codex", "agy"} {

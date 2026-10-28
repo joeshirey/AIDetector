@@ -30,17 +30,20 @@ func fixture(t *testing.T, name string) string {
 	return string(b)
 }
 
+// ai_blog.md is stock LLM style; casual_blog.md imitates a casual human
+// writer. (Both were written by a model, so they test the hand-set signals'
+// directions, not real-world accuracy.)
 func TestProseDirection(t *testing.T) {
 	ai := analyze(t, fixture(t, "ai_blog.md"), detect.KindAuto)
-	human := analyze(t, fixture(t, "human_blog.md"), detect.KindAuto)
-	if ai.Kind != detect.KindProse || human.Kind != detect.KindProse {
-		t.Fatalf("kinds = %s, %s; want prose", ai.Kind, human.Kind)
+	casual := analyze(t, fixture(t, "casual_blog.md"), detect.KindAuto)
+	if ai.Kind != detect.KindProse || casual.Kind != detect.KindProse {
+		t.Fatalf("kinds = %s, %s; want prose", ai.Kind, casual.Kind)
 	}
 	if ai.Score < 80 {
-		t.Errorf("ai blog scored %d, want >= 80", ai.Score)
+		t.Errorf("stock-style blog scored %d, want >= 80", ai.Score)
 	}
-	if human.Score > 30 {
-		t.Errorf("human blog scored %d, want <= 30", human.Score)
+	if casual.Score > 30 {
+		t.Errorf("casual-style blog scored %d, want <= 30", casual.Score)
 	}
 }
 
@@ -76,14 +79,14 @@ func TestShortTextStaysNearMiddle(t *testing.T) {
 }
 
 func TestSegments(t *testing.T) {
-	text := fixture(t, "human_blog.md") + "\n\n" + fixture(t, "ai_blog.md")
+	text := fixture(t, "casual_blog.md") + "\n\n" + fixture(t, "ai_blog.md")
 	res := analyze(t, text, detect.KindProse)
 	if len(res.Segments) < 2 {
 		t.Fatalf("got %d segments, want >= 2", len(res.Segments))
 	}
 	first, last := res.Segments[0], res.Segments[len(res.Segments)-1]
 	if first.Score >= last.Score {
-		t.Errorf("human-first segment %d should score below AI-last segment %d", first.Score, last.Score)
+		t.Errorf("casual-first segment %d should score below stock-style segment %d", first.Score, last.Score)
 	}
 }
 

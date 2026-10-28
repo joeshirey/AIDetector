@@ -54,6 +54,11 @@ func TestChatbotResidueIsDecisive(t *testing.T) {
 	if r, ok := s["chatbot_residue"]; !ok || !r.Decisive {
 		t.Fatalf("chatbot residue not flagged as decisive: %+v", r)
 	}
+	// Quoting the phrase isn't using it.
+	s = signals(t, `The detector treats "as an AI language model" as a decisive tell, along with AI co-author trailers in commit messages.`)
+	if _, ok := s["chatbot_residue"]; ok {
+		t.Fatal("quoted phrase treated as decisive")
+	}
 	// Friendly wrappers humans also write are a feature, not proof.
 	s = signals(t, "Great question, and one I get a lot. I hope this helps anyone who is starting out with a garden this spring and wondering what to plant first.")
 	if _, ok := s["chatbot_residue"]; ok {
