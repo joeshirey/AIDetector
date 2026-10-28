@@ -93,10 +93,6 @@ func (*Detector) Detect(_ context.Context, in detect.Input) ([]detect.Signal, er
 			Detail: fmt.Sprintf("%.1f per 1k words: %s%s", rate, ps.detail, examples(hits))})
 	}
 
-	// Commits are too short for rhythm statistics.
-	if in.Kind == detect.KindCommit {
-		return out, nil
-	}
 	sentences := text.Sentences(body)
 	if s, ok := sentenceBand(sentences); ok {
 		add(s)

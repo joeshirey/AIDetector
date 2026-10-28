@@ -16,12 +16,12 @@ var (
 	greetingRE = regexp.MustCompile(`(?i)^(?:hi|hello|hey|dear|good (?:morning|afternoon|evening)|greetings)\b`)
 )
 
-// Normalize applies the corpus normalization for a kind ("commit", "pr",
+// Normalize applies the corpus normalization for a kind ("pr",
 // "memo", or a detect.Kind such as "prose"). Training and detection both use
 // it, so the word model sees the same view of a text in both places.
 func Normalize(kind, s string) string {
 	switch kind {
-	case "commit", "pr":
+	case "pr":
 		return StripLinks(s)
 	case "memo", "prose":
 		// Code, tables, front matter, and labels aren't prose (PrepareProse).
@@ -31,9 +31,9 @@ func Normalize(kind, s string) string {
 	return s
 }
 
-// StripLinks removes URLs, issue references, and @mentions. Human commits
-// and PRs link to issues and people that an AI writing from a diff never
-// sees, so leaving them in would teach "has a link = human".
+// StripLinks removes URLs, issue references, and @mentions. Human PRs link
+// to issues and people that an AI writing from a diff never sees, so leaving
+// them in would teach "has a link = human".
 func StripLinks(s string) string {
 	s = urlRE.ReplaceAllString(s, "")
 	s = issueRefRE.ReplaceAllString(s, "")

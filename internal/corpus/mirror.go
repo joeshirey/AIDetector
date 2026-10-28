@@ -25,12 +25,6 @@ import (
 // use; adversarial variants belong in a separate set that is never trained on.
 // checkPrompts enforces this.
 var writePrompts = map[string][]string{
-	"commit": {
-		"Write a git commit message for this diff. Reply with only the commit message.\n\n```diff\n{diff}\n```",
-		"I'm about to commit these changes. Can you write the commit message? Just give me the message, nothing else.\n\n{diff}",
-		"Write a commit message for the following change, matching the style of recent commits in this repository.\n\nRecent commit subjects:\n{style}\n\nDiff:\n{diff}\n\nOutput only the commit message.",
-		"Generate a concise git commit message (subject line, then a short body if useful) for this diff. Output the message only.\n\n{diff}",
-	},
 	"pr": {
 		"Write a pull request description for this change.\n\nTitle: {title}\n\nDiff:\n{diff}\n\nOutput only the PR description in Markdown (no title).",
 		"Here's the diff for a PR titled \"{title}\" in {repo}. Write the PR body I should use. Only output the body.\n\n{diff}",
@@ -107,18 +101,20 @@ func (s *Store) Mirror(ctx context.Context, o MirrorOptions) error {
 	if err != nil {
 		return err
 	}
-	if o.Add && len(o.Generators) != 1 {
-		return fmt.Errorf("-add takes exactly one generator")
-	}
+
 	// Hashed order, so a limited run samples evenly instead of taking the
 	// ids (and repos) that sort first.
 	slices.SortFunc(sources, func(a, b Sample) int { return cmp.Compare(hashN(a.ID, 1<<30), hashN(b.ID, 1<<30)) })
 	var todo []Sample
 	for _, sm := range sources {
 		has := s.HasAI(o.Kind, sm.ID)
-		if o.Add {
-			_, err := os.Stat(s.AIPath(o.Kind, o.Generators[0].Name(), sm.ID))
-			has = err == nil
+		if o.Add { // only mirrors from these generators count
+			has = false
+			for _, g := range o.Generators {
+				if _, err := os.Stat(s.AIPath(o.Kind, g.Name(), sm.ID)); err == nil {
+					has = true
+				}
+			}
 		}
 		if !has && (o.Limit == 0 || len(todo) < o.Limit) {
 			todo = append(todo, sm)
@@ -126,6 +122,8 @@ func (s *Store) Mirror(ctx context.Context, o MirrorOptions) error {
 	}
 	log.Printf("%s: %d sources, %d to mirror", o.Kind, len(sources), len(todo))
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	jobs := make(chan Sample)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -139,6 +137,12 @@ func (s *Store) Mirror(ctx context.Context, o MirrorOptions) error {
 				variant, err := s.mirrorOne(ctx, gen, sm)
 				e := ManifestEntry{ID: sm.ID, Generator: gen.Name(), Variant: variant, Split: split.Of(sm.ID), At: time.Now().UTC()}
 				mu.Lock()
+				if errors.Is(err, ErrBudget) {
+					log.Printf("stopping: %v", err)
+					cancel() // no more paid calls; unsent jobs are dropped
+					mu.Unlock()
+					continue
+				}
 				if err != nil {
 					failed++
 					e.Error = err.Error()
@@ -147,7 +151,7 @@ func (s *Store) Mirror(ctx context.Context, o MirrorOptions) error {
 					done++
 				}
 				if (done+failed)%25 == 0 {
-					log.Printf("%s: %d/%d done, %d failed", o.Kind, done, len(todo), failed)
+					log.Printf("%s: %d/%d done, %d failed; %v", o.Kind, done, len(todo), failed, Spend)
 				}
 				mu.Unlock()
 				s.Log(o.Kind, e)
@@ -162,16 +166,16 @@ func (s *Store) Mirror(ctx context.Context, o MirrorOptions) error {
 	}
 	close(jobs)
 	wg.Wait()
-	log.Printf("%s: finished, %d written, %d failed", o.Kind, done, failed)
-	return ctx.Err()
+	log.Printf("%s: finished, %d written, %d failed; %v", o.Kind, done, failed, Spend)
+	if err := Spend.Check(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) mirrorOne(ctx context.Context, gen Generator, sm Sample) (int, error) {
 	templates := writePrompts[sm.Kind]
 	variant := hashN(sm.ID+gen.Name(), len(templates))
-	if sm.Kind == "commit" && variant == 2 && sm.Context["style"] == "" {
-		variant = 0 // style-matching prompt needs example subjects
-	}
 	vars := map[string]string{"text": sm.Text}
 	for k, v := range sm.Context {
 		vars[k] = v
@@ -201,7 +205,7 @@ var (
 )
 
 // clean strips wrapper text that isn't part of the artifact itself: code
-// fences around the whole answer, "Here's your commit message:" preambles, a
+// fences around the whole answer, "Here's your PR description:" preambles, a
 // leading Subject: line on emails, and a repeated title heading on posts.
 func clean(kind, out, title string) string {
 	out = strings.TrimSpace(out)
@@ -210,8 +214,6 @@ func clean(kind, out, title string) string {
 		out = strings.TrimSpace(m[1])
 	}
 	switch kind {
-	case "commit":
-		out = text.Normalize(kind, NormalizeCommit(out))
 	case "pr":
 		out = text.Normalize(kind, NormalizePR(out))
 	case "memo":

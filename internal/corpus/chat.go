@@ -15,6 +15,7 @@ import (
 // itself, or a local server such as LM Studio.
 type chatGen struct {
 	baseURL, key, model string
+	budget              *Budget // nil for free local servers
 }
 
 func (g *chatGen) Name() string { return g.model }
@@ -24,6 +25,11 @@ var thinkRE = regexp.MustCompile(`(?s)<think>.*?</think>`)
 var chatClient = &http.Client{Timeout: 20 * time.Minute} // local reasoning models can be slow
 
 func (g *chatGen) Generate(ctx context.Context, prompt string) (string, error) {
+	if g.budget != nil {
+		if err := g.budget.Check(); err != nil {
+			return "", err
+		}
+	}
 	body, _ := json.Marshal(map[string]any{
 		"model":    g.model,
 		"messages": []map[string]string{{"role": "user", "content": prompt}},
@@ -59,9 +65,16 @@ func (g *chatGen) Generate(ctx context.Context, prompt string) (string, error) {
 				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 			Error json.RawMessage `json:"error"` // an object from OpenAI, a plain string from some local servers
+			Usage struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"` // includes reasoning tokens
+			} `json:"usage"`
 		}
 		err = json.NewDecoder(resp.Body).Decode(&out)
 		resp.Body.Close()
+		if g.budget != nil && err == nil {
+			g.budget.Add(g.model, out.Usage.PromptTokens, out.Usage.CompletionTokens)
+		}
 		switch {
 		case resp.StatusCode == 429 || resp.StatusCode >= 500:
 			lastErr = fmt.Errorf("%s: HTTP %d", g.model, resp.StatusCode)

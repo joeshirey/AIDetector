@@ -1,6 +1,6 @@
 ---
 name: ai-text-detection
-description: Check whether text was written by AI using the aidetector MCP tools (detect_ai_text, detect_ai_file, detect_ai_commits). Use when the user asks if something is AI-written or AI-generated, wants a blog post, memo, report, email, essay, PR description, or commit history checked for AI authorship, or asks for an AI-detection score.
+description: Check whether text was written by AI using the aidetector MCP tools (detect_ai_text, detect_ai_file). Use when the user asks if something is AI-written or AI-generated, wants a blog post, memo, report, email, essay, or PR description checked for AI authorship, or asks for an AI-detection score.
 ---
 
 # AI text detection
@@ -13,11 +13,10 @@ explains why. Scores are probabilistic evidence, never proof.
 1. **Pick the tool.**
    - Text in the conversation: `detect_ai_text`.
    - A local `.txt` or `.md` file: `detect_ai_file` with an absolute path.
-   - Commit messages in a git repo: `detect_ai_commits` with `repo`, a `range`
-     such as `main..HEAD`, and `max`.
 2. **Set `kind` when you know it**: `prose` (blog posts, memos, reports,
-   emails, essays), `pr` (pull request descriptions), or `commit`. The
-   automatic guess can mistake a short memo for a commit message.
+   emails, essays) or `pr` (pull request descriptions). Without it, text with
+   PR-style section headings is treated as a PR and everything else as prose.
+   Commit messages aren't supported.
 3. **Check the length.** Prose under 50 words and PR descriptions under 25
    words come back labeled "too short to judge". Tell the user it's too short
    instead of reporting the number. Results are most reliable from about 150
@@ -47,16 +46,9 @@ explains why. Scores are probabilistic evidence, never proof.
   warning, report the score both with and without the block.
 - A reason with direction `info` says how many words of code, tables, front
   matter, or headings were left out of scoring. Mention it when it's large.
-- A reason with impact `decisive` (for example a `Co-Authored-By` AI trailer,
-  or "as an AI language model") is near-certain evidence.
+- A reason with impact `decisive` (for example "Generated with Claude Code" in
+  a PR description, or "as an AI language model") is near-certain evidence.
 - Ignore `raw_score` and `cutoffs` unless the user asks how scoring works.
-
-## Commit messages
-
-Commit messages are short, so a single commit's score is weak evidence. Below
-80 it means little on its own. Report the pattern across commits (the mean
-score and how many scored 60 or higher) rather than a verdict on any one
-commit. Decisive reasons, such as AI co-author trailers, are the exception.
 
 ## Presenting results
 

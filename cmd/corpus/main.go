@@ -1,7 +1,7 @@
 // Command corpus builds the labeled human/AI corpus used to evaluate and
 // calibrate the detector.
 //
-//	corpus harvest [-kind all|commit|pr|blog|memo|essay] [-n N] [-pool]
+//	corpus harvest [-kind all|pr|blog|memo|essay] [-n N] [-pool]
 //	corpus promote [-kind ...] -n N [-hard 0.5]
 //	corpus mirror  [-kind ...] [-gens provider:model,...] [-j 8] [-limit N]
 //	corpus variant -type polished|humanized [-kind ...] [-n 60]
@@ -30,7 +30,7 @@ import (
 	"github.com/joeshirey/AIDetector/internal/fixtures"
 )
 
-var kinds = []string{"commit", "pr", "blog", "memo", "essay"}
+var kinds = []string{"pr", "blog", "memo", "essay"}
 
 var defaultRepos = []string{
 	"golang/go", "rails/rails", "django/django", "hashicorp/terraform", "prometheus/prometheus",
@@ -54,7 +54,7 @@ func main() {
 
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 	root := fs.String("out", "corpus", "corpus directory")
-	kind := fs.String("kind", "all", "all, or a comma-separated list of commit, pr, blog, memo, essay")
+	kind := fs.String("kind", "all", "all, or a comma-separated list of pr, blog, memo, essay")
 	n := fs.Int("n", 0, "harvest/promote/variant: samples per kind")
 	pool := fs.Bool("pool", false, "harvest: collect into the human-only reserve pool")
 	hard := fs.Float64("hard", 0.5, "promote: share of promotions taken from the highest-scoring (hard-negative) pool texts")
@@ -63,13 +63,15 @@ func main() {
 	prefix := fs.String("prefix", "", "promote: only consider pool samples whose id starts with this (e.g. seroter-)")
 	source := fs.String("source", "", "harvest -kind blog: seroter, hanselman, medium-tech, or medium-nontech instead of the default sources")
 	phase := fs.Int("phase", 3, "harvest -pool: which every-7th Medium row to sample (0 is the training harvest)")
-	repos := fs.String("repos", strings.Join(defaultRepos, ","), "harvest: GitHub repos for commits and PRs")
+	repos := fs.String("repos", strings.Join(defaultRepos, ","), "harvest: GitHub repos for PRs")
 	gens := fs.String("gens", defaultGens, "mirror/ping: generators as provider:model, comma-separated")
 	workers := fs.Int("j", 8, "mirror: concurrent requests")
 	limit := fs.Int("limit", 0, "mirror: max new mirrors per kind this run (0 = all)")
-	add := fs.Bool("add", false, "mirror: add mirrors from one new generator to existing samples")
+	add := fs.Bool("add", false, "mirror: add mirrors from these generators to existing samples (rotating among them)")
+	budget := fs.Float64("budget", 20, "stop paid API generation once estimated spend reaches this many USD")
 	fs.Parse(os.Args[2:])
 
+	corpus.Spend.Limit = *budget
 	store := &corpus.Store{Root: *root}
 	selected := kinds
 	if *kind != "all" {
@@ -199,9 +201,9 @@ func fixtureArticleIDs(path string) (map[string]bool, error) {
 }
 
 func harvest(ctx context.Context, store *corpus.Store, exclude []*corpus.Store, kinds []string, n int, pool bool, mediumPhase int, repos []string) error {
-	defaults := map[string]int{"commit": 400, "pr": 240, "blog": 250, "memo": 250, "essay": 0}
+	defaults := map[string]int{"pr": 240, "blog": 250, "memo": 250, "essay": 0}
 	if pool {
-		defaults = map[string]int{"commit": 1500, "pr": 600, "blog": 1500, "memo": 1500, "essay": 2000}
+		defaults = map[string]int{"pr": 600, "blog": 1500, "memo": 1500, "essay": 2000}
 	}
 	save := func(samples []corpus.Sample) error {
 		for _, s := range samples {
@@ -236,15 +238,10 @@ func harvest(ctx context.Context, store *corpus.Store, exclude []*corpus.Store, 
 		var samples []corpus.Sample
 		var err error
 		switch k {
-		case "commit", "pr":
+		case "pr":
 			per := (want + len(repos) - 1) / len(repos)
 			for _, repo := range repos {
-				var got []corpus.Sample
-				if k == "commit" {
-					got, err = corpus.HarvestCommits(ctx, repo, corpus.Cutoff, per, pool, seen)
-				} else {
-					got, err = corpus.HarvestPRs(ctx, repo, corpus.Cutoff, per, pool, seen)
-				}
+				got, err := corpus.HarvestPRs(ctx, repo, corpus.Cutoff, per, pool, seen)
 				if err != nil {
 					log.Printf("%s %s: %v", k, repo, err) // keep going with other repos
 				}
@@ -359,8 +356,6 @@ func promote(ctx context.Context, store *corpus.Store, kinds []string, n int, ha
 
 func detectKind(k string) detect.Kind {
 	switch k {
-	case "commit":
-		return detect.KindCommit
 	case "pr":
 		return detect.KindPR
 	}

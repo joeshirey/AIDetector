@@ -64,7 +64,7 @@ func NewGenerators(ctx context.Context, specs string) ([]Generator, error) {
 			if key == "" {
 				return nil, errors.New("OPENAI_API_KEY is not set")
 			}
-			out = append(out, &chatGen{baseURL: "https://api.openai.com/v1", key: key, model: model})
+			out = append(out, &chatGen{baseURL: "https://api.openai.com/v1", key: key, model: model, budget: Spend})
 		case "lmstudio":
 			base := os.Getenv("LMSTUDIO_URL")
 			if base == "" {

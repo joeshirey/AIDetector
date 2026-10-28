@@ -5,57 +5,33 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"slices"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/joeshirey/AIDetector/internal/detect"
 	"github.com/joeshirey/AIDetector/internal/engine"
-	"github.com/joeshirey/AIDetector/internal/gitlog"
 )
 
 const maxFileBytes = 2 << 20
 
 type textArgs struct {
 	Text string `json:"text" jsonschema:"the text to analyze"`
-	Kind string `json:"kind,omitempty" jsonschema:"auto (default), prose (blog/memo/report), commit, or pr"`
+	Kind string `json:"kind,omitempty" jsonschema:"auto (default), prose (blog/memo/report/email/essay), or pr"`
 }
 
 type fileArgs struct {
 	Path string `json:"path" jsonschema:"absolute path to a .txt or .md file"`
-	Kind string `json:"kind,omitempty" jsonschema:"auto (default), prose, commit, or pr"`
-}
-
-type commitArgs struct {
-	Repo  string `json:"repo,omitempty" jsonschema:"path to a git repository (default: server working directory)"`
-	Range string `json:"range,omitempty" jsonschema:"revision range such as main..HEAD or HEAD~20..HEAD (default: current branch)"`
-	Max   int    `json:"max,omitempty" jsonschema:"maximum commits to score (default 20, max 200)"`
-}
-
-type commitScore struct {
-	SHA        string `json:"sha"`
-	Subject    string `json:"subject"`
-	Score      int    `json:"score"`
-	Label      string `json:"label"`
-	Confidence string `json:"confidence"`
-	TopSignal  string `json:"top_signal,omitempty"`
-}
-
-type commitsResult struct {
-	Commits   []commitScore `json:"commits"`
-	MeanScore float64       `json:"mean_score"`
-	Flagged   int           `json:"flagged" jsonschema:"commits scoring 60 or higher"`
+	Kind string `json:"kind,omitempty" jsonschema:"auto (default), prose, or pr"`
 }
 
 // instructions reach every client when it connects, so agents interpret
 // results responsibly even without the companion skill installed.
 const instructions = `aidetector scores English text from 0 (human) to 100 (AI-written) and explains why.
 
-- Pass kind when you know it: prose (blogs, memos, reports, emails, essays), pr, or commit.
+- Pass kind when you know it: prose (blogs, memos, reports, emails, essays) or pr.
 - Labels: 80+ AI, 60-79 likely AI, 40-59 inconclusive, below 40 likely human. At 60, about 2% of human writing of the same kind scores as high, so a result is evidence, not proof.
 - "too short to judge" means the text is under the minimum length (50 words for prose, 25 for PRs); say so rather than reporting the score.
 - Explain results with the top two or three reasons. Always mention a "warning" reason (hidden or look-alike characters removed, or most of the AI evidence coming from one embedded or quoted block). "info" reasons say how much code, tables, or headings were excluded from scoring.
-- Single commit scores are weak evidence; report patterns across commits.
 - Describe the text, not the person ("reads as likely AI-written", not "they used AI"), and don't present a score as the sole basis for consequential decisions.`
 
 // New builds the MCP server with all detection tools registered.
@@ -86,75 +62,7 @@ func New(e *engine.Engine, version string) *mcp.Server {
 		return nil, res, err
 	})
 
-	mcp.AddTool(s, &mcp.Tool{
-		Name: "detect_ai_commits",
-		Description: "Score the commit messages in a local git repository for AI authorship. " +
-			"Returns a score per commit plus the mean. Commit messages are short, so treat individual scores as weak evidence.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, a commitArgs) (*mcp.CallToolResult, commitsResult, error) {
-		res, err := ScoreCommits(ctx, e, a.Repo, a.Range, a.Max)
-		return nil, res, err
-	})
-
 	return s
-}
-
-// ScoreCommits scores each commit message in a range. Shared with the CLI.
-func ScoreCommits(ctx context.Context, e *engine.Engine, repo, revRange string, max int) (commitsResult, error) {
-	if repo == "" {
-		repo = "."
-	}
-	if max <= 0 {
-		max = 20
-	}
-	max = min(max, 200)
-	commits, err := gitlog.Log(ctx, repo, revRange, max)
-	if err != nil {
-		return commitsResult{}, err
-	}
-	out := commitsResult{Commits: []commitScore{}}
-	total := 0
-	for _, c := range commits {
-		res, err := e.Analyze(ctx, detect.Input{Text: c.Message, Kind: detect.KindCommit})
-		if err != nil {
-			return out, err
-		}
-		cs := commitScore{SHA: c.SHA[:min(12, len(c.SHA))], Subject: c.Subject(), Score: res.Score,
-			Label: res.Label, Confidence: res.Confidence, TopSignal: topSignal(res.Signals)}
-		out.Commits = append(out.Commits, cs)
-		total += res.Score
-		if res.Score >= 60 {
-			out.Flagged++
-		}
-	}
-	if len(commits) > 0 {
-		out.MeanScore = float64(total) / float64(len(commits))
-	}
-	return out, nil
-}
-
-// topSignal names the signal that moved the score furthest from neutral.
-func topSignal(signals []detect.Signal) string {
-	if len(signals) == 0 {
-		return ""
-	}
-	best := slices.MaxFunc(signals, func(a, b detect.Signal) int {
-		da, db := a.Weight*abs(a.AIProb-0.5), b.Weight*abs(b.AIProb-0.5)
-		switch {
-		case da < db:
-			return -1
-		case da > db:
-			return 1
-		}
-		return 0
-	})
-	return best.Detail
-}
-
-func abs(x float64) float64 {
-	if x < 0 {
-		return -x
-	}
-	return x
 }
 
 func readFile(path string) ([]byte, error) {

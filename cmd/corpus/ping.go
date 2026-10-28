@@ -21,5 +21,6 @@ func runPing(ctx context.Context, gens string) error {
 		}
 		fmt.Printf("%-26s %s\n", g.Name(), strings.TrimSpace(out))
 	}
+	fmt.Println(corpus.Spend)
 	return nil
 }

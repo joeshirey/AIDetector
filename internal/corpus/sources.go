@@ -33,27 +33,9 @@ type Sample struct {
 const maxDiffBytes = 12_000
 
 var (
-	botRE        = regexp.MustCompile(`(?i)\[bot\]|dependabot|renovate|k8s-ci-robot|github-actions|greenkeeper|snyk|copybara|homu|bors`)
-	skipCommitRE = regexp.MustCompile(`(?i)^(merge (pull request|branch|remote)|bump |revert "|update changelog|release v?\d|v?\d+\.\d+\.\d+$|\[skip ci\])`)
-	trailerLine  = regexp.MustCompile(`^[A-Za-z][A-Za-z-]+: \S`)
-	prRefRE      = regexp.MustCompile(`\s*\(#\d+\)\s*$`)
-	htmlCmtRE    = regexp.MustCompile(`(?s)<!--.*?-->`)
+	botRE     = regexp.MustCompile(`(?i)\[bot\]|dependabot|renovate|k8s-ci-robot|github-actions|greenkeeper|snyk|copybara|homu|bors`)
+	htmlCmtRE = regexp.MustCompile(`(?s)<!--.*?-->`)
 )
-
-// NormalizeCommit strips the parts of a commit message that are added by
-// tooling rather than written by the author: trailer blocks (Signed-off-by,
-// Reviewed-on, Co-authored-by…) and squash-merge "(#123)" suffixes. Applied to
-// both human and AI samples so the detector can't learn from them.
-func NormalizeCommit(msg string) string {
-	lines := strings.Split(strings.TrimSpace(msg), "\n")
-	end := len(lines)
-	for end > 1 && (trailerLine.MatchString(lines[end-1]) || strings.TrimSpace(lines[end-1]) == "") {
-		end--
-	}
-	lines = lines[:end]
-	lines[0] = prRefRE.ReplaceAllString(lines[0], "")
-	return strings.TrimSpace(strings.Join(lines, "\n"))
-}
 
 // NormalizePR removes HTML comments, which are template boilerplate.
 func NormalizePR(body string) string {
@@ -76,72 +58,6 @@ func truncateDiff(d string) string {
 		return d
 	}
 	return d[:maxDiffBytes] + "\n[diff truncated]\n"
-}
-
-// HarvestCommits pulls non-merge, non-bot commits made before `before` from
-// a GitHub repo. With lazy set (pool harvesting), diffs aren't fetched until
-// a sample is promoted for mirroring; see FetchDiff.
-func HarvestCommits(ctx context.Context, repo string, before time.Time, n int, lazy bool, seen func(id string) bool) ([]Sample, error) {
-	var out []Sample
-	var subjects []string // recent human subjects, used as style examples for mirrors
-	maxPages := 10
-	if lazy {
-		maxPages = 30
-	}
-	for page := 1; len(out) < n && page <= maxPages; page++ {
-		raw, err := gh(ctx, "api", fmt.Sprintf("repos/%s/commits?until=%s&per_page=100&page=%d", repo, before.Format(time.RFC3339), page))
-		if err != nil {
-			return out, err
-		}
-		var commits []struct {
-			SHA    string `json:"sha"`
-			Commit struct {
-				Message string `json:"message"`
-				Author  struct {
-					Name string `json:"name"`
-				} `json:"author"`
-			} `json:"commit"`
-			Author  *struct{ Login string } `json:"author"`
-			Parents []struct{}              `json:"parents"`
-		}
-		if err := json.Unmarshal(raw, &commits); err != nil {
-			return out, err
-		}
-		if len(commits) == 0 {
-			break
-		}
-		for i, c := range commits {
-			// Every 3rd commit, so one author's series of near-identical
-			// commits doesn't dominate.
-			if len(out) >= n {
-				break
-			}
-			if i%3 != 0 {
-				continue
-			}
-			login := ""
-			if c.Author != nil {
-				login = c.Author.Login
-			}
-			msg := NormalizeCommit(c.Commit.Message)
-			subject, _, _ := strings.Cut(msg, "\n")
-			id := sanitize(repo) + "-" + c.SHA[:10]
-			if len(c.Parents) > 1 || botRE.MatchString(login+" "+c.Commit.Author.Name) ||
-				skipCommitRE.MatchString(subject) || len(strings.Fields(msg)) < 2 || seen(id) {
-				continue
-			}
-			sm := Sample{
-				ID: id, Kind: "commit", Source: "github:" + repo, Text: text.Normalize("commit", msg),
-				Context: map[string]string{"repo": repo, "sha": c.SHA, "style": strings.Join(lastN(subjects, 5), "\n")},
-			}
-			if !lazy && FetchDiff(ctx, &sm) != nil {
-				continue // huge or binary diffs fail; skip them
-			}
-			out = append(out, sm)
-			subjects = append(subjects, subject)
-		}
-	}
-	return out, nil
 }
 
 // HarvestPRs pulls merged, non-bot PRs with real descriptions.
@@ -186,19 +102,15 @@ func HarvestPRs(ctx context.Context, repo string, before time.Time, n int, lazy 
 	return out, nil
 }
 
-// FetchDiff fills in the diff for a commit or PR sample harvested lazily.
+// FetchDiff fills in the diff for a PR sample harvested lazily.
 func FetchDiff(ctx context.Context, sm *Sample) error {
-	if sm.Context["diff"] != "" || (sm.Kind != "commit" && sm.Kind != "pr") {
+	if sm.Context["diff"] != "" || sm.Kind != "pr" {
 		return nil
 	}
 	repo := sm.Context["repo"]
 	var diff []byte
 	var err error
-	if sm.Kind == "commit" {
-		diff, err = gh(ctx, "api", "repos/"+repo+"/commits/"+sm.Context["sha"], "-H", "Accept: application/vnd.github.diff")
-	} else {
-		diff, err = gh(ctx, "pr", "diff", sm.Context["number"], "--repo", repo)
-	}
+	diff, err = gh(ctx, "pr", "diff", sm.Context["number"], "--repo", repo)
 	if err != nil {
 		return err
 	}

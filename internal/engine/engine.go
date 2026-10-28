@@ -167,7 +167,7 @@ func Default() *Engine {
 	e.models = map[detect.Kind]*calibrate.Model{}
 	e.lmKinds = map[detect.Kind]bool{}
 	words := map[detect.Kind]*ngram.Model{}
-	for _, k := range []detect.Kind{detect.KindProse, detect.KindCommit, detect.KindPR} {
+	for _, k := range []detect.Kind{detect.KindProse, detect.KindPR} {
 		var m, lm calibrate.Model
 		if e.lm != nil && loadModel(string(k)+".lm.json", &lm) {
 			e.models[k], e.lmKinds[k] = &lm, true
@@ -208,8 +208,8 @@ func Heuristic() *Engine {
 }
 
 // minWords is the shortest text each kind's model can judge. The training
-// data has almost no prose under 50 words (commercial detectors use a similar floor);
-// commits are short by nature and their model was trained on short text.
+// data has almost no prose under 50 words (commercial detectors use a
+// similar floor).
 var minWords = map[detect.Kind]int{detect.KindProse: 50, detect.KindPR: 25}
 
 // TooShort is the label for text below a kind's minimum length.
@@ -261,8 +261,8 @@ func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 	}
 	if res.WordCount == 0 {
 		res.Cutoffs = e.Thresholds(in.Kind)
-		res.Score, res.RawScore, res.Label, res.Confidence = 50, 50, Label(50), "low"
-		res.Notes = append(res.Notes, "no text to analyze")
+		res.Score, res.RawScore, res.Label, res.Confidence = 50, 50, TooShort, "low"
+		res.Notes = append(res.Notes, "no prose to analyze")
 		return res, nil
 	}
 
@@ -524,8 +524,6 @@ func combine(signals []detect.Signal, conf float64) float64 {
 func lengthConfidence(k detect.Kind, words int) float64 {
 	full := 300.0
 	switch k {
-	case detect.KindCommit:
-		full = 60
 	case detect.KindPR:
 		full = 150
 	}

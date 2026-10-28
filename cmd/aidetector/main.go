@@ -1,7 +1,6 @@
 // Command aidetector scores text for AI authorship from the command line.
 //
 //	aidetector [detect] [-kind K] [-json] [file|-]
-//	aidetector commits [-repo DIR] [-n N] [range]
 //	aidetector eval [-kind K] [-split train|test] [-heuristic] [-json] DIR...
 //	aidetector fit  -kind K DIR...
 //	aidetector dist [-kind K] DIR...   score distribution of a folder (e.g. the human pool)
@@ -29,7 +28,6 @@ import (
 	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/eval"
 	"github.com/joeshirey/AIDetector/internal/fixtures"
-	"github.com/joeshirey/AIDetector/internal/mcpserver"
 	"github.com/joeshirey/AIDetector/internal/setup"
 	"github.com/joeshirey/AIDetector/internal/split"
 )
@@ -39,7 +37,7 @@ func main() {
 	cmd := "detect"
 	if len(args) > 0 {
 		switch args[0] {
-		case "detect", "commits", "eval", "fit", "dist", "thresholds", "setup", "fixtures":
+		case "detect", "eval", "fit", "dist", "thresholds", "setup", "fixtures":
 			cmd, args = args[0], args[1:]
 		case "-h", "-help", "--help", "help":
 			usage()
@@ -50,8 +48,6 @@ func main() {
 	switch cmd {
 	case "detect":
 		err = runDetect(args)
-	case "commits":
-		err = runCommits(args)
 	case "eval":
 		err = runEval(args)
 	case "fit":
@@ -75,10 +71,9 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage:
   aidetector setup [-client all|claude|codex|antigravity] [-dry-run] [-skill-only] [-scorer URL]
   aidetector fixtures [-fetch-only]   fetch (cached, gitignored) and score the regression fixtures
-  aidetector [detect] [-kind auto|prose|commit|pr] [-json] [file|-]
-  aidetector commits [-repo DIR] [-n N] [-json] [range]
+  aidetector [detect] [-kind auto|prose|pr] [-json] [file|-]
   aidetector eval [-kind K] [-split train|test] [-heuristic] [-json] DIR...   (DIR/human/*, DIR/ai/*)
-  aidetector fit -kind prose|commit|pr DIR...   (writes internal/engine/models/KIND.json)
+  aidetector fit -kind prose|pr DIR...   (writes internal/engine/models/KIND.json)
   aidetector dist [-kind K] DIR...   score distribution for every .txt under DIR (pool false-positive rate, variant sets)
   aidetector thresholds -kind K DIR...   set label cutoffs from human-only text (writes internal/engine/models/thresholds.json)
 `)
@@ -86,7 +81,7 @@ func usage() {
 
 func runDetect(args []string) error {
 	fs := flag.NewFlagSet("detect", flag.ExitOnError)
-	kind := fs.String("kind", "auto", "auto, prose, commit, or pr")
+	kind := fs.String("kind", "auto", "auto, prose, or pr")
 	asJSON := fs.Bool("json", false, "print full JSON result")
 	fs.Parse(args)
 
@@ -133,32 +128,9 @@ func runDetect(args []string) error {
 	return nil
 }
 
-func runCommits(args []string) error {
-	fs := flag.NewFlagSet("commits", flag.ExitOnError)
-	repo := fs.String("repo", ".", "git repository")
-	n := fs.Int("n", 20, "max commits")
-	asJSON := fs.Bool("json", false, "print JSON")
-	fs.Parse(args)
-	res, err := mcpserver.ScoreCommits(context.Background(), engine.Default(), *repo, fs.Arg(0), *n)
-	if err != nil {
-		return err
-	}
-	if *asJSON {
-		return printJSON(res)
-	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "SCORE\tSHA\tSUBJECT\tTOP SIGNAL")
-	for _, c := range res.Commits {
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\n", c.Score, c.SHA[:min(8, len(c.SHA))], truncate(c.Subject, 60), c.TopSignal)
-	}
-	tw.Flush()
-	fmt.Printf("\n%d commits, mean score %.0f, %d scored 60+\n", len(res.Commits), res.MeanScore, res.Flagged)
-	return nil
-}
-
 func runEval(args []string) error {
 	fs := flag.NewFlagSet("eval", flag.ExitOnError)
-	kind := fs.String("kind", "auto", "auto, prose, commit, or pr")
+	kind := fs.String("kind", "auto", "auto, prose, or pr")
 	asJSON := fs.Bool("json", false, "print per-sample JSON")
 	splitName := fs.String("split", "", "only score the train or test split")
 	heuristic := fs.Bool("heuristic", false, "ignore fitted models; use hand-set weights")
@@ -198,7 +170,7 @@ func runEval(args []string) error {
 
 func runFit(args []string) error {
 	fs := flag.NewFlagSet("fit", flag.ExitOnError)
-	kind := fs.String("kind", "", "prose, commit, or pr")
+	kind := fs.String("kind", "", "prose or pr")
 	out := fs.String("out", "internal/engine/models", "output directory")
 	withLM := fs.Bool("lm", false, "include token-probability features from the local scorer; writes KIND.lm.json")
 	fs.Parse(args)
@@ -291,7 +263,7 @@ func runFit(args []string) error {
 
 func runDist(args []string) error {
 	fs := flag.NewFlagSet("dist", flag.ExitOnError)
-	kind := fs.String("kind", "auto", "auto, prose, commit, or pr")
+	kind := fs.String("kind", "auto", "auto, prose, or pr")
 	worst := fs.Int("worst", 5, "list this many highest-scoring files")
 	segs := fs.Bool("segments", false, "also report the share of 200-word segments at 40/60/80")
 	dump := fs.String("dump", "", "write per-text raw and segment scores as JSON lines to this file (for analysis)")
@@ -414,7 +386,7 @@ func scoreFiles(e *engine.Engine, dirs []string, kind detect.Kind) ([]scored, er
 // human text actually reaches each label, so the reported rates are honest.
 func runThresholds(args []string) error {
 	fs := flag.NewFlagSet("thresholds", flag.ExitOnError)
-	kind := fs.String("kind", "", "prose, commit, or pr")
+	kind := fs.String("kind", "", "prose or pr")
 	out := fs.String("out", "internal/engine/models/thresholds.json", "thresholds file to update")
 	mixed := fs.Float64("mixed", 0.05, "share of human text allowed at or above the inconclusive cutoff")
 	likely := fs.Float64("likely", 0.02, "share of human text allowed at or above the likely-AI cutoff")

@@ -44,11 +44,6 @@ func (*Detector) Detect(_ context.Context, in detect.Input) ([]detect.Signal, er
 	}
 	add(aiVocabulary(words, per1k))
 	add(aiPhrases(body, per1k))
-	// Commits are too short and too formulaic for rhythm and formatting
-	// statistics; devtext covers their structure instead.
-	if in.Kind == detect.KindCommit {
-		return out, nil
-	}
 	add(burstiness(sentences))
 	add(emDashes(body, per1k))
 	add(boldLeadBullets(body))

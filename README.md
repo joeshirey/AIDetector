@@ -5,7 +5,7 @@ gives it a score from 0 to 100 and tells you why. You can run it as an MCP
 server (Claude Code, Codex, and Antigravity all work) or from the command line.
 
 I tuned it for the writing I deal with day to day: blog posts, memos,
-reports, emails, essays, pull request descriptions, commit messages. Everything
+reports, emails, essays, and pull request descriptions. Everything
 runs on the local machine from one Go binary with the models baked in. No API
 calls. Nothing gets downloaded.
 
@@ -44,20 +44,18 @@ agy mcp add aidetector "$(go env GOPATH)/bin/aidetector-mcp"
 
 ## Using it
 
-There are three MCP tools:
+There are two MCP tools:
 
 | Tool | What it does |
 |---|---|
-| `detect_ai_text` | Scores text. Pass `kind` (`prose`, `pr`, or `commit`) if you know it. |
+| `detect_ai_text` | Scores text. Pass `kind` (`prose` or `pr`) if you know it. |
 | `detect_ai_file` | Scores a local `.txt` or `.md` file. |
-| `detect_ai_commits` | Scores the commit messages in a range like `main..HEAD`. |
 
 From the command line:
 
 ```sh
 aidetector post.md                    # score a file
 pbpaste | aidetector -kind prose      # score the clipboard
-aidetector commits -n 50 main..HEAD   # score recent commits
 ```
 
 The skill explains to agents how to read results (and what not to conclude
@@ -68,7 +66,7 @@ client when it connects, in case the skill isn't installed.
 
 There's one scale for all kinds of text. I picked the cutoffs with human
 writing the models had never seen. The idea is that a label should mean about
-the same thing for a blog post as it does for a commit:
+the same thing for a blog post as it does for a PR description:
 
 | Score | Label | Share of human writing that scores this high |
 |---|---|---|
@@ -97,9 +95,8 @@ You also get:
 
 Prose has to be at least 50 words and PR descriptions at least 25. Anything
 shorter comes back as "too short to judge", because the models never saw text
-that short. Commit messages have no minimum. There are a few tells that count
-at any length, like an AI co-author trailer on a commit. They push the score
-to 97 or higher.
+that short. There are a few tells that count at any length, like "Generated
+with Claude Code" in a PR description. They push the score to 97 or higher.
 
 ## How accurate is it?
 
@@ -110,22 +107,20 @@ The test split is 20% of the corpus:
 | Kind | AUROC | AI caught with 1% of human text flagged |
 |---|---|---|
 | Prose (blogs, technical blogs, memos, essays) | 0.996 | 95% |
-| PR descriptions | 0.990 | 87% |
-| Commit messages | 0.862 | 35% |
+| PR descriptions | 0.993 | 87% |
 
 For false positives I used fresh human text. None of it was in training and
-this half wasn't used to pick the cutoffs either. The commits and PRs are from
-10 repos the corpus had never touched:
+this half wasn't used to pick the cutoffs either. The PRs are from 10 repos
+the corpus had never touched:
 
 | Human texts | Labeled inconclusive | Labeled likely AI or AI | Labeled AI | Segments at 60+ |
 |---|---|---|---|---|
 | Learner essays (275) | 0% | 0% | 0% | 0% |
-| Blog posts (289) | 2% | 1% | 0.3% | 0.5% |
-| Technical blog posts (364)* | 1% | 0.5% | 0.3% | 0.5% |
-| Non-tech Medium, pre-2021 (760) | 4% | 1.1% | 0.5% | 1.2% |
-| Commit messages (282) | 2% | 1% | 0% | |
-| PR descriptions (157) | 3% | 2% | 0% | |
-| Memos and emails (293) | 4.5% | 6% | 3% | |
+| Blog posts (289) | 1% | 1% | 0.3% | 0.3% |
+| Technical blog posts (364)* | 0.8% | 0.5% | 0% | 0.4% |
+| Non-tech Medium, pre-2021 (760) | 3.6% | 0.9% | 0.5% | 0.8% |
+| PR descriptions (157) | 3.8% | 1.3% | 0% | |
+| Memos and emails (293) | 5% | 5.5% | 2% | |
 
 \* Posts by Richard Seroter, Scott Hanselman, and technical Medium authors.
 Other posts by the same authors are in training, so this row is optimistic.
@@ -147,6 +142,11 @@ A few other results:
   Claude models left out (and then all the Gemini ones), prose AUROC on the
   missing family dropped to 0.84 to 0.87. Qwen3.6 went the other way: before
   any Qwen text was in training, 98% to 100% of its prose already scored as AI.
+  GPT landed in between. Before any GPT text was in training, 93% to 100% of
+  GPT blog posts and essays already scored as AI, but only 68% to 84% of memos
+  and 54% of gpt-6-luna's PR descriptions did. Those were the gaps the GPT
+  training data closed (per-model test AUROC is now 0.96 to 1.00 for prose
+  and PRs).
 - Technical writing used to drift toward the middle of the scale. Adding engineering blogs to
   training cut that by about a third for authors it had never seen, and AI
   detection on technical text went up slightly.
@@ -160,16 +160,12 @@ A few other results:
 A score isn't proof. About 2 in 100 human texts get "likely AI" or higher.
 I wouldn't base a grade, a disciplinary action, or a hiring call on it alone.
 
-Commit messages are hard. They're short and there isn't much to go on. I
-wouldn't read much into one commit scoring under 80 (look at a whole batch of
-commits together).
-
 It can't tell a light AI edit from a full AI rewrite (polished text tends to
 read as AI). Formal writing and templates (form letters, PR templates) also
 score higher than casual writing does.
 
-It's trained on Claude, Gemini, and Qwen. Text from other model families (GPT,
-Llama, Grok) may score lower than it should. English only. No code.
+It's trained on Claude, Gemini, GPT, and Qwen. Text from other model families
+(Llama, Grok, DeepSeek) may score lower than it should. English only. No code.
 
 ## How it works
 
@@ -192,7 +188,7 @@ The features come from four detectors:
 | `ngram` | A learned word-pattern score: logistic regression over word and punctuation 1- and 2-grams (about 40,000 terms for prose). |
 | `signs` | Patterns from Wikipedia's [Signs of AI writing](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing), like "not X but Y" constructions, AI vocabulary by model era, punctuation variety, and lexical diversity (MTLD, Yule's K). |
 | `stylometric` | Sentence and paragraph rhythm, em dashes, lists of three, bold-label bullets. |
-| `devtext` | Commit and PR structure (change-list bullets, agent PR templates, AI co-author trailers). |
+| `devtext` | PR structure (agent PR templates, uniform bullet lists) and AI tool attributions ("Generated with Claude Code"). |
 
 `aidetector fit` trains one model per kind. The word-pattern model goes first.
 Its score is then a feature in the final model. I use 5-fold out-of-fold
@@ -222,7 +218,7 @@ The human text all predates ChatGPT's launch in November 2022:
 
 | Kind | Source |
 |---|---|
-| commit, pr | GitHub commits and merged PRs from 30 open-source repos |
+| pr | Merged GitHub PRs from 30 open-source repos |
 | blog | Medium posts tagged tech or business ([fabiochiu/medium-articles](https://huggingface.co/datasets/fabiochiu/medium-articles)), plus Go blog posts for the human pool |
 | blog (technical) | Posts by [Richard Seroter](https://seroter.com) and [Scott Hanselman](https://www.hanselman.com), and Medium posts with engineering tags (`harvest -source seroter`, `hanselman`, or `medium-tech`) |
 | blog (non-tech pool) | Medium posts from before 2021 with no tech or business tags (`harvest -pool -source medium-nontech`). Used only to measure false positives and set cutoffs, never for training. |
@@ -237,14 +233,16 @@ Each human sample gets an AI "mirror". I hand a model the same diff (or PR
 title, or a brief of the same post) and have it write its own version. The
 topic stays the same on the human side and the AI side. The classifier has
 to pick up on style because the subject gives nothing away. I've used Claude Opus, Sonnet, and Haiku 5.5 (on Vertex AI or
-the Claude API), Gemini 3.8 Flash and 3.1 Pro, and Qwen3.6 in LM Studio. Any
-OpenAI-compatible API should work.
+the Claude API), Gemini 3.8 Flash and 3.1 Pro, GPT-5.6 Sol, GPT-5 Mini, and
+GPT-6 Luna (OpenAI API), and Qwen3.6 in LM Studio. Any OpenAI-compatible API
+should work. Paid OpenAI runs track estimated spend from the token counts in
+each response and stop at `-budget` dollars (default 20).
 
 Human and AI text get the same cleanup. Otherwise the model could learn
 where a sample came from in place of who wrote it. Links get stripped. So do issue
-numbers, commit trailers, email greetings and sign-offs, Markdown, and image
-credits. The prompts just ask for the thing itself (write a
-commit message for this diff). There's also a check that refuses to run any
+numbers, email greetings and sign-offs, Markdown, and image credits. The
+prompts just ask for the thing itself (write a PR description for this
+diff). There's also a check that refuses to run any
 prompt asking for "human-sounding" output.
 
 ```sh
@@ -265,7 +263,6 @@ bin/corpus mirror -out corpus_tech -kind blog -j 12
 
 bin/aidetector fit -kind prose corpus/blog corpus/memo corpus/essay corpus_tech/blog
 bin/aidetector fit -kind pr corpus/pr
-bin/aidetector fit -kind commit corpus/commit
 go build -o bin/aidetector ./cmd/aidetector   # embeds the new models
 
 # set label cutoffs on fresh human text the models haven't seen
@@ -322,7 +319,7 @@ bin/aidetector fit -lm -kind prose corpus/blog corpus/memo corpus/essay   # writ
 ## Layout
 
 ```
-cmd/aidetector        CLI: detect, commits, eval, fit, thresholds, dist, setup
+cmd/aidetector        CLI: detect, eval, fit, thresholds, dist, setup, fixtures
 cmd/aidetector-mcp    MCP server (stdio)
 cmd/corpus            corpus builder: harvest, mirror, promote, variant
 internal/detect/      detectors (stylometric, signs, devtext, ngram, perplexity)

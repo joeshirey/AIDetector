@@ -1,5 +1,5 @@
-// Package devtext looks for tells specific to commit messages and pull
-// request descriptions, which are usually too short for statistics alone.
+// Package devtext looks for tells specific to pull request descriptions,
+// plus AI tool attributions that can appear in any text.
 package devtext
 
 import (
@@ -22,20 +22,15 @@ func (*Detector) Name() string { return name }
 
 var (
 	// Tools that sign their work. Checked on every kind, since people paste PR
-	// bodies and commit messages into other documents too.
+	// bodies into other documents too.
 	aiTrailerRE = regexp.MustCompile(`(?mi)^co-authored-by:.*\b(claude|copilot|chatgpt|openai|gpt-?\d|gemini|cursor|devin|codex|aider|noreply@anthropic\.com)\b.*` +
 		`|generated (with|by) \[?(claude|copilot|chatgpt|cursor|codex|gemini)` +
 		`|🤖 generated with`)
 
-	prSectionRE   = regexp.MustCompile(`(?mi)^#{1,3}\s*(summary|changes|what changed|test plan|testing|motivation|key changes|overview)\b`)
-	checkboxRE    = regexp.MustCompile(`(?m)^[ \t]*[-*]\s+\[[ xX]\]\s`)
-	bulletRE      = regexp.MustCompile(`(?m)^[ \t]*[-*]\s+(.+)$`)
-	emojiHeadRE   = regexp.MustCompile(`(?m)^#{1,3}\s*[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]`)
-	imperativeRE  = regexp.MustCompile(`^(Add|Update|Remove|Refactor|Fix|Improve|Enhance|Implement|Introduce|Ensure|Replace|Rename|Move|Extract|Simplify|Clean|Support|Handle|Use|Make|Allow|Prevent|Avoid|Bump|Document|Adjust|Consolidate|Streamline)\b`)
-	lowerSubjRE   = regexp.MustCompile(`^[a-z]`)
-	wipSubjectRE  = regexp.MustCompile(`(?i)^(wip|fixup!|squash!|oops|typo|tmp|temp|asdf|more|stuff|fix|fixes|update|changes)\b\W*$`)
-	conventionRE  = regexp.MustCompile(`^(feat|fix|chore|docs|refactor|test|perf|build|ci|style|revert)(\([^)]*\))?!?:\s`)
-	trailingDotRE = regexp.MustCompile(`\.$`)
+	prSectionRE = regexp.MustCompile(`(?mi)^#{1,3}\s*(summary|changes|what changed|test plan|testing|motivation|key changes|overview)\b`)
+	checkboxRE  = regexp.MustCompile(`(?m)^[ \t]*[-*]\s+\[[ xX]\]\s`)
+	bulletRE    = regexp.MustCompile(`(?m)^[ \t]*[-*]\s+(.+)$`)
+	emojiHeadRE = regexp.MustCompile(`(?m)^#{1,3}\s*[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]`)
 )
 
 func (*Detector) Detect(_ context.Context, in detect.Input) ([]detect.Signal, error) {
@@ -49,8 +44,6 @@ func (*Detector) Detect(_ context.Context, in detect.Input) ([]detect.Signal, er
 	switch in.Kind {
 	case detect.KindPR:
 		out = append(out, prSignals(in.Text)...)
-	case detect.KindCommit:
-		out = append(out, commitSignals(in.Text)...)
 	}
 	for i := range out {
 		out[i].Detector = name
@@ -79,54 +72,6 @@ func prSignals(t string) []detect.Signal {
 			Detail: "section headings start with emoji"})
 	}
 	if s := bulletUniformity(t); s != nil {
-		out = append(out, *s)
-	}
-	return out
-}
-
-func commitSignals(t string) []detect.Signal {
-	t = strings.TrimSpace(t)
-	subject, body, _ := strings.Cut(t, "\n")
-	subject = strings.TrimSpace(subject)
-	words := len(text.Words(t))
-	var out []detect.Signal
-
-	// Terse or sloppy subjects are a human habit. Agents always write a full,
-	// tidy subject.
-	switch {
-	case wipSubjectRE.MatchString(subject) || len(subject) < 12:
-		out = append(out, detect.Signal{Name: "terse_subject", Value: float64(len(subject)), AIProb: 0.15, Weight: 1.0,
-			Detail: fmt.Sprintf("terse subject %q", subject)})
-	case lowerSubjRE.MatchString(subject) && !conventionRE.MatchString(subject),
-		trailingDotRE.MatchString(subject) || len(subject) > 72:
-		out = append(out, detect.Signal{Name: "loose_subject", Value: float64(len(subject)), AIProb: 0.35, Weight: 0.5,
-			Detail: "subject breaks common conventions (case, trailing period, or length)"})
-	}
-
-	body = strings.TrimSpace(aiTrailerRE.ReplaceAllString(body, ""))
-	if body == "" {
-		if words <= 12 {
-			out = append(out, detect.Signal{Name: "single_line", Value: float64(words), AIProb: 0.3, Weight: 0.4,
-				Detail: "short single-line commit"})
-		}
-		return out
-	}
-
-	// Agents like a body made of "- Verb the thing" bullets.
-	bullets := bulletRE.FindAllStringSubmatch(body, -1)
-	if len(bullets) >= 3 {
-		imperative := 0
-		for _, b := range bullets {
-			if imperativeRE.MatchString(strings.TrimSpace(b[1])) {
-				imperative++
-			}
-		}
-		ratio := float64(imperative) / float64(len(bullets))
-		p := 0.5 + 0.35*ratio
-		out = append(out, detect.Signal{Name: "bulleted_change_list", Value: ratio, AIProb: p, Weight: 0.8,
-			Detail: fmt.Sprintf("body is a %d-item change list, %d starting with a stock verb", len(bullets), imperative)})
-	}
-	if s := bulletUniformity(body); s != nil {
 		out = append(out, *s)
 	}
 	return out
