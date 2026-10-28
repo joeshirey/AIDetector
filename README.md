@@ -111,6 +111,42 @@ weight, mid-2026 words do), current models keep sentences in an 8–20 word band
 semicolons, and parentheses, and vary word choice more than people. Em dashes now point
 toward human writing.
 
+## Experimental: token-probability scorer (Binoculars / Fast-DetectGPT)
+
+`scorer/server.py` is a small local service that runs two MLX models from the
+same family, a base "observer" and its instruction-tuned "performer", and
+returns zero-shot statistics for each text: log-perplexity, the Binoculars
+ratio (Hans et al., 2024), and Fast-DetectGPT curvature (Bao et al., 2024).
+Unlike the word-pattern model, these don't depend on which company's model
+wrote the text. Results are cached in `~/.cache/aidetector-scorer.sqlite`.
+
+```sh
+uv run scorer/server.py --observer mlx-community/Qwen3-8B-Base-bf16 --performer mlx-community/Qwen3-8B-bf16
+export AIDETECTOR_SCORER_URL=http://127.0.0.1:8765
+
+# MCP server with the scorer:
+claude mcp add --scope user aidetector -e AIDETECTOR_SCORER_URL=http://127.0.0.1:8765 -- "$PWD/bin/aidetector-mcp"
+```
+
+Apple Silicon only (MLX); the two 8B models need about 33 GB of memory. When
+the scorer is reachable, the engine adds `lm_*` signals and switches to models
+fitted with them, if any are embedded (`fit -lm` writes `<kind>.lm.json`;
+`thresholds` writes `<kind>.lm` cutoffs). No `.lm` models ship, so today the
+scorer changes nothing unless you fit them yourself.
+
+**Why it's not enabled:** it barely helped. On the test split, AUROC moved by
+0.001. On generator families held out of training, prose AUROC rose from
+0.839 to 0.855 (Claude unseen) and 0.873 to 0.906 (Gemini unseen), PRs from
+0.855 to 0.871 (Gemini unseen) and slightly down for Claude unseen. Adding more
+generator families to the corpus is the more direct fix.
+
+Two findings from building it. A single chat-tuned model as both observer and
+performer gave statistics that flip direction between Claude and Gemini text,
+which defeats the purpose. The base/instruct pair keeps a consistent direction
+across families, but against 2026 models it runs opposite to the 2024 papers:
+frontier AI text is now slightly *less* predictable to Qwen than human text.
+The fitted model learns the direction from data.
+
 ## Building the corpus
 
 `cmd/corpus` harvests human text written before Nov 2022 and generates an AI

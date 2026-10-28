@@ -190,6 +190,7 @@ func runFit(args []string) error {
 	fs := flag.NewFlagSet("fit", flag.ExitOnError)
 	kind := fs.String("kind", "", "prose, commit, or pr")
 	out := fs.String("out", "internal/engine/models", "output directory")
+	withLM := fs.Bool("lm", false, "include token-probability features from the local scorer; writes KIND.lm.json")
 	fs.Parse(args)
 	k := detect.ParseKind(*kind)
 	if k == detect.KindAuto || fs.NArg() == 0 {
@@ -198,9 +199,22 @@ func runFit(args []string) error {
 	}
 	// Features come from the heuristic engine so fitting never depends on a
 	// previously fitted model.
-	r, err := eval.Run(context.Background(), engine.Heuristic(), fs.Args(), k, "train")
+	he := engine.Heuristic()
+	if *withLM && he.Scorer() == nil {
+		return fmt.Errorf("-lm needs a running scorer at $AIDETECTOR_SCORER_URL")
+	}
+	r, err := eval.Run(context.Background(), he, fs.Args(), k, "train")
 	if err != nil {
 		return err
+	}
+	if !*withLM {
+		for _, s := range r.Samples {
+			for n := range s.Feats {
+				if strings.HasPrefix(n, "lm_") {
+					delete(s.Feats, n)
+				}
+			}
+		}
 	}
 	docs := make([]string, len(r.Samples))
 	labels := make([]bool, len(r.Samples))
@@ -244,6 +258,9 @@ func runFit(args []string) error {
 	}
 	m := calibrate.Fit(string(k), rows)
 	path := *out + "/" + string(k) + ".json"
+	if *withLM {
+		path = *out + "/" + string(k) + ".lm.json"
+	}
 	if err := writeJSON(path, m); err != nil {
 		return err
 	}
@@ -353,10 +370,12 @@ func runThresholds(args []string) error {
 		usage()
 		os.Exit(2)
 	}
-	all, err := scoreFiles(engine.Default(), fs.Args(), k)
+	e := engine.Default()
+	all, err := scoreFiles(e, fs.Args(), k)
 	if err != nil {
 		return err
 	}
+	key := e.ThresholdKey(k)
 	// Cutoffs are in raw-score units; the shared scale is derived from them.
 	var calib, check []int
 	for _, s := range all {
@@ -394,17 +413,17 @@ func runThresholds(args []string) error {
 	t.HumanAtAI = share(check, t.AI)
 	t.CalibratedOn = len(calib)
 
-	file := map[detect.Kind]engine.Thresholds{}
+	file := map[string]engine.Thresholds{}
 	if b, err := os.ReadFile(*out); err == nil {
 		if err := json.Unmarshal(b, &file); err != nil {
 			return err
 		}
 	}
-	file[k] = t
+	file[key] = t
 	if err := writeJSON(*out, file); err != nil {
 		return err
 	}
-	fmt.Printf("%s cutoffs from %d human texts (checked on %d held out):\n", k, len(calib), len(check))
+	fmt.Printf("%s cutoffs from %d human texts (checked on %d held out):\n", key, len(calib), len(check))
 	fmt.Printf("  mixed     >= %3d   held-out human at or above: %.1f%%\n", t.Mixed, 100*t.HumanAtMixed)
 	fmt.Printf("  likely AI >= %3d   held-out human at or above: %.1f%%\n", t.LikelyAI, 100*t.HumanAtLikelyAI)
 	fmt.Printf("  AI        >= %3d   held-out human at or above: %.1f%%\n", t.AI, 100*t.HumanAtAI)

@@ -16,6 +16,7 @@ import (
 	"github.com/joeshirey/AIDetector/internal/detect"
 	"github.com/joeshirey/AIDetector/internal/detect/devtext"
 	"github.com/joeshirey/AIDetector/internal/detect/ngram"
+	"github.com/joeshirey/AIDetector/internal/detect/perplexity"
 	"github.com/joeshirey/AIDetector/internal/detect/signs"
 	"github.com/joeshirey/AIDetector/internal/detect/stylometric"
 	"github.com/joeshirey/AIDetector/internal/text"
@@ -34,6 +35,7 @@ type Result struct {
 	Segments   []Segment       `json:"segments,omitempty" jsonschema:"per-chunk scores for longer documents"`
 	AIFraction *float64        `json:"ai_fraction,omitempty" jsonschema:"share of segments at or above the likely-AI cutoff"`
 	Cutoffs    Thresholds      `json:"cutoffs" jsonschema:"raw-score cutoffs for this kind that map to 40, 60, and 80, with measured human rates"`
+	Scorer     string          `json:"scorer,omitempty" jsonschema:"token-probability model used, if the local scorer was available"`
 	Notes      []string        `json:"notes,omitempty"`
 }
 
@@ -59,8 +61,14 @@ type Segment struct {
 type Engine struct {
 	detectors  []detect.Detector
 	models     map[detect.Kind]*calibrate.Model
-	thresholds map[detect.Kind]Thresholds
+	thresholds map[string]Thresholds
+	lm         *perplexity.Detector
+	lmKinds    map[detect.Kind]bool // kinds scored by a model fitted with lm_* features
 }
+
+// Optional detectors may fail (e.g. a local service is down) without failing
+// the whole analysis; their signals are simply absent.
+type optional interface{ Optional() bool }
 
 // Thresholds are raw-score cutoffs, chosen per kind so that a fixed share of
 // held-out human text reaches each one. Scale maps them to 40, 60, and 80 so
@@ -113,13 +121,25 @@ func Label(score int) string {
 	}
 }
 
+// ThresholdKey names a kind's entry in thresholds.json. Models fitted with
+// token-probability features have their own cutoffs ("prose.lm").
+func (e *Engine) ThresholdKey(k detect.Kind) string {
+	if e.lmKinds[k] {
+		return string(k) + ".lm"
+	}
+	return string(k)
+}
+
 // Thresholds returns the label cutoffs for a kind.
 func (e *Engine) Thresholds(k detect.Kind) Thresholds {
-	if t, ok := e.thresholds[k]; ok {
+	if t, ok := e.thresholds[e.ThresholdKey(k)]; ok {
 		return t
 	}
 	return DefaultThresholds
 }
+
+// Scorer returns the token-probability scorer in use, or nil.
+func (e *Engine) Scorer() *perplexity.Detector { return e.lm }
 
 func New(ds ...detect.Detector) *Engine { return &Engine{detectors: ds} }
 
@@ -127,14 +147,19 @@ func New(ds ...detect.Detector) *Engine { return &Engine{detectors: ds} }
 var modelFS embed.FS
 
 // Default returns an engine with every built-in detector plus the fitted
-// word-pattern and calibration models embedded in the binary.
+// word-pattern and calibration models embedded in the binary. When the local
+// token-probability scorer is reachable it also uses the models fitted with
+// its features (<kind>.lm.json).
 func Default() *Engine {
 	e := Heuristic()
 	e.models = map[detect.Kind]*calibrate.Model{}
+	e.lmKinds = map[detect.Kind]bool{}
 	words := map[detect.Kind]*ngram.Model{}
 	for _, k := range []detect.Kind{detect.KindProse, detect.KindCommit, detect.KindPR} {
-		var m calibrate.Model
-		if loadModel(string(k)+".json", &m) {
+		var m, lm calibrate.Model
+		if e.lm != nil && loadModel(string(k)+".lm.json", &lm) {
+			e.models[k], e.lmKinds[k] = &lm, true
+		} else if loadModel(string(k)+".json", &m) {
 			e.models[k] = &m
 		}
 		var w ngram.Model
@@ -159,8 +184,16 @@ func loadModel(name string, v any) bool {
 }
 
 // Heuristic returns an engine that ignores fitted models and uses the
-// hand-set signal weights, for comparison.
-func Heuristic() *Engine { return New(stylometric.New(), devtext.New(), signs.New()) }
+// hand-set signal weights, for comparison. It includes the token-probability
+// scorer when AIDETECTOR_SCORER_URL points at a running one.
+func Heuristic() *Engine {
+	e := New(stylometric.New(), devtext.New(), signs.New())
+	if lm := perplexity.FromEnv(); lm != nil {
+		e.lm = lm
+		e.detectors = append(e.detectors, lm)
+	}
+	return e
+}
 
 // segmentWords is the target chunk size for per-segment scoring.
 const segmentWords = 200
@@ -172,6 +205,9 @@ func (e *Engine) Analyze(ctx context.Context, in detect.Input) (Result, error) {
 		in.Kind = detect.GuessKind(in.Text)
 	}
 	res := Result{Kind: in.Kind, WordCount: len(text.Words(in.Text))}
+	if e.lm != nil {
+		res.Scorer = e.lm.Model()
+	}
 	if res.WordCount == 0 {
 		res.Cutoffs = e.Thresholds(in.Kind)
 		res.Score, res.RawScore, res.Label, res.Confidence = 50, 50, Label(50), "low"
@@ -221,6 +257,9 @@ func (e *Engine) signals(ctx context.Context, in detect.Input) ([]detect.Signal,
 	for _, d := range e.detectors {
 		s, err := d.Detect(ctx, in)
 		if err != nil {
+			if o, ok := d.(optional); ok && o.Optional() {
+				continue
+			}
 			return nil, fmt.Errorf("%s: %w", d.Name(), err)
 		}
 		all = append(all, s...)
