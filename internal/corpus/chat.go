@@ -1,0 +1,89 @@
+package corpus
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"regexp"
+	"strings"
+	"time"
+)
+
+// chatGen calls an OpenAI-compatible /chat/completions endpoint: OpenAI
+// itself, or a local server such as LM Studio.
+type chatGen struct {
+	baseURL, key, model string
+}
+
+func (g *chatGen) Name() string { return g.model }
+
+var thinkRE = regexp.MustCompile(`(?s)<think>.*?</think>`)
+
+var chatClient = &http.Client{Timeout: 20 * time.Minute} // local reasoning models can be slow
+
+func (g *chatGen) Generate(ctx context.Context, prompt string) (string, error) {
+	body, _ := json.Marshal(map[string]any{
+		"model":    g.model,
+		"messages": []map[string]string{{"role": "user", "content": prompt}},
+	})
+	var lastErr error
+	for attempt := range 4 {
+		if attempt > 0 {
+			select {
+			case <-time.After(time.Duration(attempt*attempt) * 5 * time.Second):
+			case <-ctx.Done():
+				return "", ctx.Err()
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, "POST", g.baseURL+"/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if g.key != "" {
+			req.Header.Set("Authorization", "Bearer "+g.key)
+		}
+		resp, err := chatClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var out struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+					Refusal string `json:"refusal"`
+				} `json:"message"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&out)
+		resp.Body.Close()
+		switch {
+		case resp.StatusCode == 429 || resp.StatusCode >= 500:
+			lastErr = fmt.Errorf("%s: HTTP %d", g.model, resp.StatusCode)
+			continue
+		case err != nil:
+			return "", fmt.Errorf("%s: %w", g.model, err)
+		case out.Error != nil:
+			return "", fmt.Errorf("%s: %s", g.model, out.Error.Message)
+		case len(out.Choices) == 0:
+			return "", fmt.Errorf("%s: no choices", g.model)
+		}
+		c := out.Choices[0]
+		if c.Message.Refusal != "" || c.FinishReason == "content_filter" {
+			return "", ErrRefused
+		}
+		if c.FinishReason == "length" {
+			return "", fmt.Errorf("%s: output truncated", g.model)
+		}
+		// Some servers return reasoning inline; keep only the answer.
+		return strings.TrimSpace(thinkRE.ReplaceAllString(c.Message.Content, "")), nil
+	}
+	return "", lastErr
+}

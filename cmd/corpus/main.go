@@ -64,6 +64,7 @@ func main() {
 	gens := fs.String("gens", defaultGens, "mirror/ping: generators as provider:model, comma-separated")
 	workers := fs.Int("j", 8, "mirror: concurrent requests")
 	limit := fs.Int("limit", 0, "mirror: max new mirrors per kind this run (0 = all)")
+	add := fs.Bool("add", false, "mirror: add mirrors from one new generator to existing samples")
 	fs.Parse(os.Args[2:])
 
 	store := &corpus.Store{Root: *root}
@@ -88,7 +89,7 @@ func main() {
 		var gs []corpus.Generator
 		if gs, err = corpus.NewGenerators(ctx, *gens); err == nil {
 			for _, k := range selected {
-				if err = store.Mirror(ctx, corpus.MirrorOptions{Kind: k, Generators: gs, Workers: *workers, Limit: *limit}); err != nil {
+				if err = store.Mirror(ctx, corpus.MirrorOptions{Kind: k, Generators: gs, Workers: *workers, Limit: *limit, Add: *add}); err != nil {
 					break
 				}
 			}

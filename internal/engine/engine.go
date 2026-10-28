@@ -26,7 +26,7 @@ import (
 type Result struct {
 	Score      int             `json:"score" jsonschema:"0-100 on a scale shared by all kinds: 40+ mixed, 60+ likely AI, 80+ AI; at most ~10%, ~2%, and ~0.5% of held-out human text of the same kind reaches each"`
 	RawScore   int             `json:"raw_score" jsonschema:"the model's own 0-100 probability before mapping onto the shared scale"`
-	Label      string          `json:"label" jsonschema:"human, likely human, mixed (possibly AI-assisted), likely AI, or AI"`
+	Label      string          `json:"label" jsonschema:"human, likely human, mixed (possibly AI-assisted), likely AI, AI, or too short to judge"`
 	Confidence string          `json:"confidence" jsonschema:"low, medium, or high; mostly driven by text length"`
 	Kind       detect.Kind     `json:"kind"`
 	WordCount  int             `json:"word_count"`
@@ -195,6 +195,14 @@ func Heuristic() *Engine {
 	return e
 }
 
+// minWords is the shortest text each kind's model can judge. The training
+// data has almost no prose under 50 words (commercial detectors use a similar floor);
+// commits are short by nature and their model was trained on short text.
+var minWords = map[detect.Kind]int{detect.KindProse: 50, detect.KindPR: 25}
+
+// TooShort is the label for text below a kind's minimum length.
+const TooShort = "too short to judge"
+
 // segmentWords is the target chunk size for per-segment scoring.
 const segmentWords = 200
 
@@ -234,6 +242,10 @@ func (e *Engine) Analyze(ctx context.Context, in detect.Input) (Result, error) {
 	res.Score = int(math.Round(e.scale(in.Kind, raw, signals)))
 	res.Label = Label(res.Score)
 	res.Confidence = confidenceLabel(conf, signals)
+	if n := minWords[in.Kind]; res.WordCount < n && res.Score < 97 {
+		res.Label, res.Confidence = TooShort, "low"
+		res.Notes = append(res.Notes, fmt.Sprintf("%d words is below the %d-word minimum for %s; the score is not meaningful at this length", res.WordCount, n, in.Kind))
+	}
 	res.Signals = signals
 	res.Reasons = e.reasons(in.Kind, signals, res.WordCount)
 

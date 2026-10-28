@@ -7,13 +7,30 @@ they cross-compile anywhere.
 
 ## Install
 
+On a machine with Go 1.27+. The repo is private, so Go needs Git credentials
+for it once:
+
+```sh
+gh auth login && gh auth setup-git            # or any Git credential setup for github.com
+go env -w GOPRIVATE='github.com/joeshirey/*'
+go install github.com/joeshirey/AIDetector/cmd/aidetector-mcp@latest
+go install github.com/joeshirey/AIDetector/cmd/aidetector@latest   # optional CLI
+
+# Register with Claude Code (user scope = available in every project)
+claude mcp add --scope user aidetector -- "$(go env GOPATH)/bin/aidetector-mcp"
+```
+
+The binaries are self-contained: models are embedded, nothing is downloaded at
+runtime, and no API keys are needed. From a checkout instead:
+
 ```sh
 go build -o bin/aidetector ./cmd/aidetector
 go build -o bin/aidetector-mcp ./cmd/aidetector-mcp
-
-# Register with Claude Code (user scope = available in every project)
-claude mcp add --scope user aidetector -- "$PWD/bin/aidetector-mcp"
 ```
+
+Minimum lengths: prose under 50 words and PRs under 25 words are labeled
+"too short to judge" (unless a decisive tell is present). Commits have no
+minimum.
 
 ## MCP tools
 

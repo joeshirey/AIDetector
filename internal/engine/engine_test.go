@@ -129,3 +129,19 @@ func TestScale(t *testing.T) {
 		t.Error("default thresholds should be the identity")
 	}
 }
+
+func TestTooShort(t *testing.T) {
+	text := "Ok so the deploy broke again. I think its the cache thing from last week, Dave said he'd look but he is out til Monday."
+	res, err := Default().Analyze(context.Background(), detect.Input{Text: text, Kind: detect.KindProse})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Label != TooShort || res.Confidence != "low" {
+		t.Errorf("got %q / %q, want %q / low", res.Label, res.Confidence, TooShort)
+	}
+	// A decisive tell still counts on short text.
+	res, _ = Default().Analyze(context.Background(), detect.Input{Text: "As an AI language model, I can't share opinions on this topic.", Kind: detect.KindProse})
+	if res.Label != "AI" {
+		t.Errorf("decisive short text got %q", res.Label)
+	}
+}

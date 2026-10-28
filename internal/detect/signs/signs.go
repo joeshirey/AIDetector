@@ -67,20 +67,20 @@ var residueRE = regexp.MustCompile(words(`as an ai(?: language model| assistant)
 func (*Detector) Detect(_ context.Context, in detect.Input) ([]detect.Signal, error) {
 	body := text.StripCode(in.Text)
 	ws := text.Words(body)
-	if len(ws) < 15 {
-		return nil, nil
-	}
-	per1k := 1000 / float64(len(ws))
 	var out []detect.Signal
 	add := func(s detect.Signal) {
 		s.Detector = name
 		out = append(out, s)
 	}
-
+	// Checked at any length: one hit is decisive.
 	if m := residueRE.FindString(body); m != "" {
 		add(detect.Signal{Name: "chatbot_residue", Value: 1, AIProb: 0.99, Weight: 3, Decisive: true,
 			Detail: fmt.Sprintf("chatbot wrapper text: %q (§22)", m)})
 	}
+	if len(ws) < 15 {
+		return out, nil
+	}
+	per1k := 1000 / float64(len(ws))
 	for _, ps := range phraseSets {
 		hits := ps.re.FindAllString(body, -1)
 		rate := float64(len(hits)) * per1k

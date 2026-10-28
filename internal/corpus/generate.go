@@ -24,6 +24,9 @@ type Generator interface {
 var ErrRefused = errors.New("model refused")
 
 // NewGenerators parses specs like "claude:claude-opus-5-5,gemini:gemini-3.8-flash".
+// Providers: claude (Vertex AI or Claude API), gemini, openai (OPENAI_API_KEY),
+// and lmstudio (a local LM Studio server at LMSTUDIO_URL, default
+// http://127.0.0.1:1234/v1).
 func NewGenerators(ctx context.Context, specs string) ([]Generator, error) {
 	var out []Generator
 	var claude *anthropic.Client
@@ -56,6 +59,18 @@ func NewGenerators(ctx context.Context, specs string) ([]Generator, error) {
 				gem = c
 			}
 			out = append(out, &geminiGen{client: gem, model: model})
+		case "openai":
+			key := os.Getenv("OPENAI_API_KEY")
+			if key == "" {
+				return nil, errors.New("OPENAI_API_KEY is not set")
+			}
+			out = append(out, &chatGen{baseURL: "https://api.openai.com/v1", key: key, model: model})
+		case "lmstudio":
+			base := os.Getenv("LMSTUDIO_URL")
+			if base == "" {
+				base = "http://127.0.0.1:1234/v1"
+			}
+			out = append(out, &chatGen{baseURL: strings.TrimRight(base, "/"), model: model})
 		default:
 			return nil, fmt.Errorf("generator %q: unknown provider %q", spec, provider)
 		}

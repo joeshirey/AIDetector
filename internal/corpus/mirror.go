@@ -1,11 +1,14 @@
 package corpus
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -90,7 +93,8 @@ type MirrorOptions struct {
 	Kind       string
 	Generators []Generator
 	Workers    int
-	Limit      int // max new mirrors this run; 0 = all
+	Limit      int  // max new mirrors this run; 0 = all
+	Add        bool // add a mirror from the (single) generator to samples that lack one from it, even if they have others
 }
 
 // Mirror writes one AI counterpart for every human sample that lacks one.
@@ -103,9 +107,20 @@ func (s *Store) Mirror(ctx context.Context, o MirrorOptions) error {
 	if err != nil {
 		return err
 	}
+	if o.Add && len(o.Generators) != 1 {
+		return fmt.Errorf("-add takes exactly one generator")
+	}
+	// Hashed order, so a limited run samples evenly instead of taking the
+	// ids (and repos) that sort first.
+	slices.SortFunc(sources, func(a, b Sample) int { return cmp.Compare(hashN(a.ID, 1<<30), hashN(b.ID, 1<<30)) })
 	var todo []Sample
 	for _, sm := range sources {
-		if !s.HasAI(o.Kind, sm.ID) && (o.Limit == 0 || len(todo) < o.Limit) {
+		has := s.HasAI(o.Kind, sm.ID)
+		if o.Add {
+			_, err := os.Stat(s.AIPath(o.Kind, o.Generators[0].Name(), sm.ID))
+			has = err == nil
+		}
+		if !has && (o.Limit == 0 || len(todo) < o.Limit) {
 			todo = append(todo, sm)
 		}
 	}
