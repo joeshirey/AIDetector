@@ -47,9 +47,17 @@ type Report struct {
 
 // Run scores every sample in dirs. splitName is "train", "test", or "" for all.
 func Run(ctx context.Context, e *engine.Engine, dirs []string, kind detect.Kind, splitName string) (*Report, error) {
+	return RunFiltered(ctx, e, dirs, kind, splitName, nil)
+}
+
+// Keep decides whether a sample file takes part. nil keeps everything.
+type Keep func(path, id string) bool
+
+// RunFiltered is Run restricted to the samples keep accepts.
+func RunFiltered(ctx context.Context, e *engine.Engine, dirs []string, kind detect.Kind, splitName string, keep Keep) (*Report, error) {
 	r := &Report{}
 	for _, dir := range dirs {
-		if err := r.walk(ctx, e, dir, kind, splitName); err != nil {
+		if err := r.walk(ctx, e, dir, kind, splitName, keep); err != nil {
 			return nil, err
 		}
 	}
@@ -60,7 +68,7 @@ func Run(ctx context.Context, e *engine.Engine, dirs []string, kind detect.Kind,
 	return r, nil
 }
 
-func (r *Report) walk(ctx context.Context, e *engine.Engine, dir string, kind detect.Kind, splitName string) error {
+func (r *Report) walk(ctx context.Context, e *engine.Engine, dir string, kind detect.Kind, splitName string, keep Keep) error {
 	for _, label := range []string{"human", "ai"} {
 		root := filepath.Join(dir, label)
 		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -73,6 +81,9 @@ func (r *Report) walk(ctx context.Context, e *engine.Engine, dir string, kind de
 			}
 			id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 			if splitName != "" && split.Of(id) != splitName {
+				return nil
+			}
+			if keep != nil && !keep(path, id) {
 				return nil
 			}
 			b, err := os.ReadFile(path)
@@ -149,4 +160,17 @@ func frac(scores []int, t int) float64 {
 		}
 	}
 	return float64(n) / float64(len(scores))
+}
+
+// Subset recomputes the report over the samples keep accepts, without
+// rescoring.
+func (r *Report) Subset(keep Keep) *Report {
+	s := &Report{}
+	for _, x := range r.Samples {
+		if keep(x.Path, x.ID) {
+			s.Samples = append(s.Samples, x)
+		}
+	}
+	s.compute()
+	return s
 }

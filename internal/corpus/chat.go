@@ -16,9 +16,23 @@ import (
 type chatGen struct {
 	baseURL, key, model string
 	budget              *Budget // nil for free local servers
+	prov                string  // provider name when not inferred (mlx)
+	maxTokens           int     // sent when set (mlx_lm.server defaults to 512)
 }
 
 func (g *chatGen) Name() string { return g.model }
+
+func (g *chatGen) Spec() Spec { return Spec{Provider: g.provider(), Model: g.model} }
+
+func (g *chatGen) provider() string {
+	if g.prov != "" {
+		return g.prov
+	}
+	if g.budget == nil {
+		return "lmstudio"
+	}
+	return "openai"
+}
 
 var thinkRE = regexp.MustCompile(`(?s)<think>.*?</think>`)
 
@@ -26,14 +40,22 @@ var chatClient = &http.Client{Timeout: 20 * time.Minute} // local reasoning mode
 
 func (g *chatGen) Generate(ctx context.Context, prompt string) (string, error) {
 	if g.budget != nil {
-		if err := g.budget.Check(); err != nil {
+		if err := g.budget.Check(g.model); err != nil {
 			return "", err
 		}
 	}
-	body, _ := json.Marshal(map[string]any{
+	start := time.Now()
+	reqBody := map[string]any{
 		"model":    g.model,
 		"messages": []map[string]string{{"role": "user", "content": prompt}},
-	})
+	}
+	if g.maxTokens > 0 {
+		reqBody["max_tokens"] = g.maxTokens
+	}
+	if g.prov == "mlx" {
+		delete(reqBody, "model") // mlx_lm.server then uses the model it was started with
+	}
+	body, _ := json.Marshal(reqBody)
 	var lastErr error
 	for attempt := range 4 {
 		if attempt > 0 {
@@ -72,8 +94,13 @@ func (g *chatGen) Generate(ctx context.Context, prompt string) (string, error) {
 		}
 		err = json.NewDecoder(resp.Body).Decode(&out)
 		resp.Body.Close()
-		if g.budget != nil && err == nil {
-			g.budget.Add(g.model, out.Usage.PromptTokens, out.Usage.CompletionTokens)
+		if err == nil {
+			mode, b := ModeOnline, g.budget
+			if b == nil { // free local server: log usage for throughput only
+				mode, b = ModeLocal, Spend
+			}
+			b.Record(Entry{Provider: g.provider(), Model: g.model, Mode: mode,
+				Usage: Usage{Input: out.Usage.PromptTokens, Output: out.Usage.CompletionTokens, Seconds: time.Since(start).Seconds()}})
 		}
 		switch {
 		case resp.StatusCode == 429 || resp.StatusCode >= 500:

@@ -39,3 +39,8 @@ __pycache__/
 /corpus_tech/
 /internal/engine/testdata/fixtures/
 /corpus_nontech/
+/runs/
+/corpus_frozen/
+/briefs/
+/reports/overnight/
+/excluded/

@@ -22,14 +22,13 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/joeshirey/AIDetector/internal/calibrate"
 	"github.com/joeshirey/AIDetector/internal/detect"
-	"github.com/joeshirey/AIDetector/internal/detect/ngram"
 	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/eval"
 	"github.com/joeshirey/AIDetector/internal/fixtures"
 	"github.com/joeshirey/AIDetector/internal/setup"
 	"github.com/joeshirey/AIDetector/internal/split"
+	"github.com/joeshirey/AIDetector/internal/train"
 )
 
 func main() {
@@ -179,82 +178,16 @@ func runFit(args []string) error {
 		usage()
 		os.Exit(2)
 	}
-	// Features come from the heuristic engine so fitting never depends on a
-	// previously fitted model.
-	he := engine.Heuristic()
-	if *withLM && he.Scorer() == nil {
-		return fmt.Errorf("-lm needs a running scorer at $AIDETECTOR_SCORER_URL")
-	}
-	r, err := eval.Run(context.Background(), he, fs.Args(), k, "train")
+	r, err := train.Fit(context.Background(), k, fs.Args(), *out, *withLM, nil)
 	if err != nil {
 		return err
 	}
-	if !*withLM {
-		for _, s := range r.Samples {
-			for n := range s.Feats {
-				if strings.HasPrefix(n, "lm_") {
-					delete(s.Feats, n)
-				}
-			}
-		}
-	}
-	docs := make([]string, len(r.Samples))
-	labels := make([]bool, len(r.Samples))
-	for i, s := range r.Samples {
-		b, err := os.ReadFile(s.Path)
-		if err != nil {
-			return err
-		}
-		docs[i], labels[i] = string(b), s.IsAI
-	}
-
-	// Word-pattern scores for the calibration step come from 5-fold
-	// out-of-fold models, so the calibrator sees how the classifier does on
-	// text it wasn't trained on rather than its overconfident training fit.
-	const folds = 5
-	oof := make([]float64, len(docs))
-	for f := range folds {
-		var trDocs []string
-		var trLabels []bool
-		for i, s := range r.Samples {
-			if fold(s.ID, folds) != f {
-				trDocs, trLabels = append(trDocs, docs[i]), append(trLabels, labels[i])
-			}
-		}
-		fm := ngram.Train(string(k), trDocs, trLabels, ngram.DefaultTrainOptions())
-		for i, s := range r.Samples {
-			if fold(s.ID, folds) == f {
-				oof[i], _ = fm.Logit(docs[i])
-			}
-		}
-	}
-	words := ngram.Train(string(k), docs, labels, ngram.DefaultTrainOptions())
-
-	rows := make([]calibrate.Row, len(r.Samples))
-	for i, s := range r.Samples {
-		feats := map[string]float64{"word_patterns": oof[i]}
-		for n, v := range s.Feats {
-			feats[n] = v
-		}
-		rows[i] = calibrate.Row{Feats: feats, Words: s.Words, IsAI: s.IsAI}
-	}
-	m := calibrate.Fit(string(k), rows)
-	path := *out + "/" + string(k) + ".json"
-	if *withLM {
-		path = *out + "/" + string(k) + ".lm.json"
-	}
-	if err := writeJSON(path, m); err != nil {
-		return err
-	}
-	if err := writeJSON(*out+"/"+string(k)+".ngram.json", words); err != nil {
-		return err
-	}
-	fmt.Printf("word-pattern model: %d terms\n", len(words.Weights))
-	fmt.Printf("fit %s on %d train samples (%d human, %d ai) -> %s\n", k, len(rows), r.Human, r.AI, path)
+	fmt.Printf("word-pattern model: %d terms\n", len(r.Words.Weights))
+	fmt.Printf("fit %s on %d train samples (%d human, %d ai) -> %s\n", k, r.Human+r.AI, r.Human, r.AI, r.ModelPath)
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "FEATURE\tWEIGHT\tIF MISSING")
-	for _, f := range m.Features {
-		fmt.Fprintf(tw, "%s\t%+.2f\t%+.2f\n", f.Name, f.Weight, m.Missing[f.Name])
+	for _, f := range r.Model.Features {
+		fmt.Fprintf(tw, "%s\t%+.2f\t%+.2f\n", f.Name, f.Weight, r.Model.Missing[f.Name])
 	}
 	tw.Flush()
 	fmt.Println("\nrebuild, then check held-out accuracy with: aidetector eval -split test", strings.Join(fs.Args(), " "))
@@ -388,104 +321,33 @@ func runThresholds(args []string) error {
 	fs := flag.NewFlagSet("thresholds", flag.ExitOnError)
 	kind := fs.String("kind", "", "prose or pr")
 	out := fs.String("out", "internal/engine/models/thresholds.json", "thresholds file to update")
-	mixed := fs.Float64("mixed", 0.05, "share of human text allowed at or above the inconclusive cutoff")
-	likely := fs.Float64("likely", 0.02, "share of human text allowed at or above the likely-AI cutoff")
-	ai := fs.Float64("ai", 0.005, "share of human text allowed at or above the AI cutoff")
-	only := fs.String("only", "both", "calibrate documents, segments, or both (segments need far more text, so they can use a wider pool)")
+	o := train.DefaultThresholdOptions()
+	fs.Float64Var(&o.Mixed, "mixed", o.Mixed, "share of human text allowed at or above the inconclusive cutoff")
+	fs.Float64Var(&o.Likely, "likely", o.Likely, "share of human text allowed at or above the likely-AI cutoff")
+	fs.Float64Var(&o.AI, "ai", o.AI, "share of human text allowed at or above the AI cutoff")
+	fs.StringVar(&o.Only, "only", o.Only, "calibrate documents, segments, or both (segments need far more text, so they can use a wider pool)")
 	fs.Parse(args)
 	k := detect.ParseKind(*kind)
 	if k == detect.KindAuto || fs.NArg() == 0 {
 		usage()
 		os.Exit(2)
 	}
-	e := engine.Default()
-	all, err := scoreFiles(e, fs.Args(), k)
+	r, err := train.Thresholds(context.Background(), engine.Default(), k, fs.Args(), *out, o, nil)
 	if err != nil {
 		return err
 	}
-	key := e.ThresholdKey(k)
-	// Cutoffs are in raw-score units; the shared scale is derived from them.
-	// Documents and their 200-word segments are calibrated separately, each
-	// split by document so a document's segments stay on one side.
-	var calib, check, segCalib, segCheck, segDocRaw []int
-	for _, s := range all {
-		if split.Hash(s.id)%2 == 0 {
-			calib = append(calib, s.raw)
-			segCalib = append(segCalib, s.segRaw...)
-			if len(s.segRaw) > 0 {
-				segDocRaw = append(segDocRaw, s.raw) // documents that have segments
-			}
-		} else {
-			check = append(check, s.raw)
-			segCheck = append(segCheck, s.segRaw...)
+	print := func(key string, t *engine.Thresholds, nCheck int, unit string) {
+		if t == nil {
+			return
 		}
-	}
-	share := func(scores []int, t int) float64 {
-		if len(scores) == 0 {
-			return 0
-		}
-		n := 0
-		for _, s := range scores {
-			if s >= t {
-				n++
-			}
-		}
-		return float64(n) / float64(len(scores))
-	}
-	// fit picks, on the calibration scores, the lowest cutoffs that at most
-	// the allowed shares reach, and measures them on the check scores.
-	fit := func(calib, check []int, mixed, likely, ai float64) engine.Thresholds {
-		cutoff := func(allowed float64, floor int) int {
-			for t := floor; t <= 100; t++ {
-				if share(calib, t) <= allowed {
-					return t
-				}
-			}
-			return 100
-		}
-		t := engine.Thresholds{}
-		t.Mixed = cutoff(mixed, 1)
-		t.LikelyAI = cutoff(likely, t.Mixed+1)
-		t.AI = cutoff(ai, t.LikelyAI+1)
-		t.HumanAtMixed = share(check, t.Mixed)
-		t.HumanAtLikelyAI = share(check, t.LikelyAI)
-		t.HumanAtAI = share(check, t.AI)
-		t.CalibratedOn = len(calib)
-		return t
-	}
-	t := fit(calib, check, *mixed, *likely, *ai)
-
-	file := map[string]engine.Thresholds{}
-	if b, err := os.ReadFile(*out); err == nil {
-		if err := json.Unmarshal(b, &file); err != nil {
-			return err
-		}
-	}
-	if *only != "segments" { // -only segments keeps the existing document cutoffs
-		file[key] = t
-	}
-	print := func(key string, t engine.Thresholds, nCheck int, unit string) {
 		fmt.Printf("%s cutoffs from %d human %s (checked on %d held out):\n", key, t.CalibratedOn, unit, nCheck)
 		fmt.Printf("  inconclusive >= %3d held-out human at or above: %.1f%%\n", t.Mixed, 100*t.HumanAtMixed)
 		fmt.Printf("  likely AI    >= %3d held-out human at or above: %.1f%%\n", t.LikelyAI, 100*t.HumanAtLikelyAI)
 		fmt.Printf("  AI           >= %3d held-out human at or above: %.1f%%\n", t.AI, 100*t.HumanAtAI)
 	}
-	if *only != "segments" {
-		print(key, t, len(check), "texts")
-	}
-	if len(segCalib) > 0 && *only != "documents" {
-		// Segments are matched to their own documents: at each level, a
-		// human segment should reach the cutoff about as often as the
-		// documents it came from reach the document cutoff. (A fixed 2%
-		// would overshoot: memos supply much of the document tail but are
-		// too short to have segments.)
-		doc := file[key]
-		floor := func(v float64) float64 { return max(v, 0.0025) }
-		st := fit(segCalib, segCheck, floor(share(segDocRaw, doc.Mixed)), floor(share(segDocRaw, doc.LikelyAI)), floor(share(segDocRaw, doc.AI)))
-		file[key+".segment"] = st
-		print(key+".segment", st, len(segCheck), "segments")
-	}
-	return writeJSON(*out, file)
+	print(r.Key, r.Doc, r.DocChecked, "texts")
+	print(r.Key+".segment", r.Segment, r.SegChecked, "segments")
+	return nil
 }
 
 // runSetup registers aidetector-mcp with agent clients and installs the

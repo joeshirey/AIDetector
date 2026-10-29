@@ -167,7 +167,7 @@ func (s *Store) Mirror(ctx context.Context, o MirrorOptions) error {
 	close(jobs)
 	wg.Wait()
 	log.Printf("%s: finished, %d written, %d failed; %v", o.Kind, done, failed, Spend)
-	if err := Spend.Check(); err != nil {
+	if err := Spend.Check(""); err != nil {
 		return err
 	}
 	return nil
@@ -245,3 +245,22 @@ func stripMarkdown(s string) string {
 	s = mdEmphasisRE.ReplaceAllString(s, "$1$2$3")
 	return strings.TrimSpace(s)
 }
+
+// CheckPrompt returns an error if a generation prompt asks for evasion
+// (sounding human, avoiding AI tells). Training text must reflect normal use.
+func CheckPrompt(p string) error {
+	if m := evasionRE.FindString(p); m != "" {
+		return fmt.Errorf("generation prompt contains detector-evasion wording %q; mirrors must reflect normal use", m)
+	}
+	return nil
+}
+
+// Clean strips wrapper text from a generated artifact (see clean).
+func Clean(kind, out, title string) string { return clean(kind, out, title) }
+
+// Fill substitutes {placeholders} in a prompt template.
+func Fill(tmpl string, vars map[string]string) string { return fill(tmpl, vars) }
+
+// BriefPrompt is the brief-writing prompt for a prose kind (blog, memo,
+// essay), or "" if the kind doesn't use briefs.
+func BriefPrompt(kind string) string { return briefPrompts[kind] }

@@ -8,7 +8,9 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"math"
+	"os"
 	"slices"
 	"strings"
 
@@ -163,6 +165,45 @@ var modelFS embed.FS
 // token-probability scorer is reachable it also uses the models fitted with
 // its features (<kind>.lm.json).
 func Default() *Engine {
+	sub, _ := fs.Sub(modelFS, "models")
+	return fromFS(sub)
+}
+
+// EmbeddedFile returns one of the embedded production model files.
+func EmbeddedFile(name string) ([]byte, error) { return modelFS.ReadFile("models/" + name) }
+
+// FromDir loads candidate models from dir (prose.json, prose.ngram.json,
+// pr.json, pr.ngram.json, thresholds.json). Files missing from dir fall back
+// to the embedded ones, so a candidate can replace just one kind.
+func FromDir(dir string) (*Engine, error) {
+	if _, err := os.Stat(dir); err != nil {
+		return nil, err
+	}
+	sub, _ := fs.Sub(modelFS, "models")
+	return fromFS(overlayFS{os.DirFS(dir), sub}), nil
+}
+
+// overlayFS reads from top first, then base.
+type overlayFS struct{ top, base fs.FS }
+
+func (o overlayFS) Open(name string) (fs.File, error) {
+	if f, err := o.top.Open(name); err == nil {
+		return f, nil
+	}
+	return o.base.Open(name)
+}
+
+func fromFS(models fs.FS) *Engine {
+	loadModel := func(name string, v any) bool {
+		b, err := fs.ReadFile(models, name)
+		if err != nil {
+			return false
+		}
+		if err := json.Unmarshal(b, v); err != nil {
+			panic(fmt.Sprintf("model %s: %v", name, err))
+		}
+		return true
+	}
 	e := Heuristic()
 	e.models = map[detect.Kind]*calibrate.Model{}
 	e.lmKinds = map[detect.Kind]bool{}
@@ -182,17 +223,6 @@ func Default() *Engine {
 	e.detectors = append(e.detectors, ngram.NewDetector(words))
 	loadModel("thresholds.json", &e.thresholds)
 	return e
-}
-
-func loadModel(name string, v any) bool {
-	b, err := modelFS.ReadFile("models/" + name)
-	if err != nil {
-		return false
-	}
-	if err := json.Unmarshal(b, v); err != nil {
-		panic(fmt.Sprintf("embedded model %s: %v", name, err))
-	}
-	return true
 }
 
 // Heuristic returns an engine that ignores fitted models and uses the

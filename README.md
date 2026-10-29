@@ -297,6 +297,184 @@ set from the test split. Those files live outside `human/` and `ai/`. That
 keeps `fit` and `eval` from seeing them. Run `aidetector dist` on the folder
 to see how they score.
 
+## Overnight loop
+
+`corpus overnight run` is an unattended improvement loop meant to run on
+one machine overnight. It covers prose and PR descriptions. Each night it:
+
+1. collects batch jobs submitted on earlier nights (results file into the corpus)
+2. promotes the human pool texts production scores as most AI-like
+   (train split only, main `corpus/*/pool` only, at most `-source-cap` per source)
+3. scores the AI text that came in and feeds the misses (AI scored under 60) to a bandit
+4. plans tomorrow's paid generation with Thompson sampling over
+   genre × length band × prompt style × generator, keeping 20% uniform exploration.
+   The training styles are plain brief, brief plus persona or audience, and
+   continue a human opening. Edits of human drafts are eval-only, like the
+   polished set: they're mostly human text and raised false positives when
+   trained on, so they live in `ai_edited/`, outside `ai/`. Every prompt passes the same
+   "no human-sounding" check as `mirror`.
+5. generates locally with Qwen and Gemma (free) until it's time to retrain,
+   one model at a time since both are served on this machine.
+   Qwen is paused for now: its 2026-10-28 samples raised human false positives
+   and were moved to `excluded/` (pass `-local` to opt back in)
+6. fits a candidate (`fit` plus `thresholds`, the same procedure as above,
+   with the final holdout left out) into `runs/overnight/<night>/round-N/`
+7. gates the candidate against production. It is accepted only if all of these hold:
+   - test-split AUROC no more than 0.002 lower, per kind
+   - recall at ≤1% false positives no more than 1 point lower
+   - no fresh pool's document false-positive rate at 60+ or 80+, or segment
+     false-positive rate at 60+, goes up by more than one text's worth
+     (one document or one segment; a same-data refit moves that much by chance)
+   - the fixtures pass
+   - the frozen Opus, Sonnet, Argon, and GPT sets each lose no more than 1
+     point of AUROC or recall
+   - the Gemini 3.8 Flash, Qwen, and Gemma slices lose no more than 0.005 AUROC
+8. measures (without changing anything) per-genre cutoffs and how much a
+   genre classifier's mistakes would cost, and the label mix on the polished
+   and humanized sets. On Sunday nights it also runs leave-one-family-out.
+9. writes `reports/overnight/<night>.md`
+
+At most 3 rounds are accepted a night. Data from rejected rounds stays in the corpus.
+
+The loop never commits, pushes, promotes a model, or changes labels or
+cutoffs. Promoting a candidate is a manual copy into
+`internal/engine/models/`, and the report says how.
+
+### Frozen data
+
+`corpus overnight init` runs once. It moves 450 human sources out of the main
+pools into `corpus_frozen/` (100 each of blog, memo, and essay, plus 150 PRs)
+and writes `corpus_frozen/manifest.json`, a SHA-256 for every file in:
+
+- the test split
+- the fresh pools
+- the fixtures
+- the frozen sources
+- the final holdout (10% of each fresh pool, picked by a separate hash)
+
+The loop never reads the final holdout. Check it by hand with
+`corpus overnight verify -holdout`. Every night starts by verifying the other
+sets, and it skips retraining if anything changed.
+
+New generations only ever go to train-split sources, and promotion only moves
+train-split ids, so the test split stays fixed.
+
+The frozen generator sets (Opus, Sonnet, Argon, and Gemma) mirror those 450
+sources from briefs kept in `briefs/frozen/`, which nothing else uses:
+
+```sh
+bin/corpus overnight frozen-gen -plan -gens claude:claude-opus-5-5,claude:claude-sonnet-5-5,gemini:gemini-4-argon
+bin/corpus overnight frozen-gen -budget-usd 20 -gens claude:claude-opus-5-5,claude:claude-sonnet-5-5,gemini:gemini-4-argon
+bin/corpus overnight frozen-gen -gens mlx:gemma-4-26b-a4b-it-8bit     # local, free (start the server first)
+bin/corpus overnight collect                       # later: file batch results
+bin/corpus overnight seal -gen claude-opus-5-5     # once complete; repeat per generator
+```
+
+The GPT frozen set is the GPT mirrors in the test split; there's no new GPT
+generation. `corpus overnight gpt-check` reports its size and looks for
+source texts or diffs that appear on both sides of the split.
+
+### Models and money
+
+| Generator | Role |
+|---|---|
+| Haiku 5.5 | ~45% of paid samples |
+| Gemini 3.8 Flash | ~25% |
+| Sonnet 5.5 | ~15% |
+| Argon (`gemini-4-argon`) | ~15% from week 2, with approval (`-argon-training`); eval-only before that |
+| Opus 5.5 | frozen set only |
+| Qwen3.6 35B A3B (LM Studio), Gemma 4 26B A4B (`mlx_lm.server`) | free, local |
+
+Gemma 4 31B (8-bit) made 15.8 tokens/s alone but 13.2 next to Qwen, under
+the 15 tokens/s floor, so the loop uses the 26B A4B. LM Studio wouldn't
+register a model downloaded outside it, so Gemma runs in `mlx_lm.server`
+(the `mlx:` provider, `MLX_URL`, default port 8081) with its default sampling
+(temperature 1.0, top-p 0.95, top-k 64). Qwen keeps the LM Studio settings
+earlier mirrors used.
+
+The bandit shifts budget toward the generators whose text gets missed. No
+paid generator drops below 5% or rises above twice its base share.
+
+Paid models all run on Vertex AI. Claude uses `ANTHROPIC_VERTEX_PROJECT_ID`
+and `CLOUD_ML_REGION=global`. Gemini uses application-default credentials;
+`gemini-api:` with `GEMINI_API_KEY` is only a fallback.
+
+Bulk generation goes through Vertex batch prediction:
+
+- Requests are JSONL in `gs://dss-model-study-aidetector-batch/batch/<night>/`.
+- Claude batches run in us-east5; Gemini batches use the global location.
+- Jobs are pipelined: tonight's submissions are collected tomorrow night.
+- A job's cost counts against the night it was submitted.
+- A failed job is retried once, then dropped.
+
+Every call is logged to `runs/ledger.jsonl` with input, output, thinking, and
+cache-read tokens and an estimated cost from the price table in
+`internal/corpus/prices.json`. The table is dated and can be overridden with
+`-prices`. Batch is priced at 0.55× online; thinking is billed as output.
+
+`-budget-usd` is a hard cap for the night (40 for full nights; Joe's ceiling
+is 50), and `-model-caps` sets per-model caps on top. A run over $2 refuses
+to start until `corpus overnight approve` has been run.
+
+If the Cloud Billing export to BigQuery is enabled, set
+`AIDETECTOR_BILLING_TABLE=project.dataset.gcp_billing_export_v1_XXXX`. The loop
+then compares billed Vertex AI cost with the ledger for nights 2 to 7 days
+back. If billing runs more than 15% over the ledger, it lowers that night's
+cap by the same ratio and flags it in the report.
+
+Price notes (checked 2026-10-28, from published rates rather than the console):
+
+- Haiku 5.5 on Vertex is listed at $0.80/$4 per million tokens, eight times
+  the first-party $0.10/$0.50. The table uses the Vertex price.
+- The 0.55 batch multiplier is the 50% batch discount plus headroom for the
+  regional endpoint premium.
+
+Recommended Vertex quotas for a $40 night (project `dss-model-study`):
+
+| Quota | Recommendation | Why |
+|---|---|---|
+| Batch prediction: concurrent jobs per region (us-east5 and global) | 10 | 4 paid generators, plus retries and frozen or effort jobs |
+| Claude Haiku 5.5 online, us-east5/global | 200k input and 40k output tokens/min | briefs are written online, one at a time |
+| Claude Sonnet 5.5 online | 20k input and 4k output tokens/min | morning analysis only |
+| Gemini online | defaults | almost everything Gemini does is batch |
+
+Batch jobs draw on their own batch quota, not the online tokens-per-minute quota.
+
+### Running it
+
+Run it from a worktree so the code under test doesn't move while you work
+in the main checkout. The data stays in the main checkout:
+
+```sh
+git worktree add ../AIDetector-overnight -b overnight/$(date +%F)
+cd ../AIDetector-overnight && go build -o bin/corpus ./cmd/corpus
+
+# Gemma runs in mlx_lm.server (the loop uses Qwen and Gemma in turn, never together)
+uv run --with mlx-lm mlx_lm.server --port 8081 \
+  --model ~/.lmstudio/models/mlx-community/gemma-4-26b-a4b-it-8bit &
+
+# dry run: about 20 requests per generator, one round, $2 cap
+bin/corpus overnight run -data ~/Code/AIDetector -budget-usd 2 -until 23:30
+
+# full night, after approval
+bin/corpus overnight run -data ~/Code/AIDetector -budget-usd 40 -until 07:00
+```
+
+Ctrl-C stops it cleanly; it still writes the report. Restarting the same
+night resumes after the last finished step, and the spend so far is restored
+from the ledger. `corpus overnight status` lists batch jobs.
+
+The effort experiment runs once. For each paid model it generates the same
+50 sources at default and at low effort. A model uses low effort at night
+only if production's scores on the two sets match: a Kolmogorov-Smirnov
+statistic under the 5% critical value, and means within 3 points.
+
+```sh
+bin/corpus overnight effort -plan
+bin/corpus overnight effort -budget-usd 10
+bin/corpus overnight collect && bin/corpus overnight effort-report   # writes runs/effort/result.json
+```
+
 ## Experimental: Binoculars scoring
 
 `scorer/server.py` is a small service you run yourself. It loads a base model
@@ -321,10 +499,12 @@ bin/aidetector fit -lm -kind prose corpus/blog corpus/memo corpus/essay   # writ
 ```
 cmd/aidetector        CLI: detect, eval, fit, thresholds, dist, setup, fixtures
 cmd/aidetector-mcp    MCP server (stdio)
-cmd/corpus            corpus builder: harvest, mirror, promote, variant
+cmd/corpus            corpus builder: harvest, mirror, promote, variant, overnight
 internal/detect/      detectors (stylometric, signs, devtext, ngram, perplexity)
 internal/engine       scoring, the calibrated scale, reasons, segments, embedded models
 internal/calibrate    logistic regression for the final model
+internal/train        fitting and cutoff calibration (shared by the CLI and the overnight loop)
+internal/overnight    the overnight loop: bandit, batch jobs, frozen sets, gate, report
 internal/setup        client setup and the embedded skill
 scorer/               experimental Binoculars service (Python, MLX)
 ```

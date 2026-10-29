@@ -8,6 +8,7 @@
 //	corpus renormalize [-kind ...]
 //	corpus stats
 //	corpus ping    [-gens ...]
+//	corpus overnight init|frozen-gen|collect|seal|effort|effort-report|run|approve|verify|status
 package main
 
 import (
@@ -51,6 +52,12 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+	if os.Args[1] == "overnight" {
+		if err := runOvernight(ctx, os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	fs := flag.NewFlagSet(os.Args[1], flag.ExitOnError)
 	root := fs.String("out", "corpus", "corpus directory")
@@ -68,10 +75,30 @@ func main() {
 	workers := fs.Int("j", 8, "mirror: concurrent requests")
 	limit := fs.Int("limit", 0, "mirror: max new mirrors per kind this run (0 = all)")
 	add := fs.Bool("add", false, "mirror: add mirrors from these generators to existing samples (rotating among them)")
-	budget := fs.Float64("budget", 20, "stop paid API generation once estimated spend reaches this many USD")
+	budget := fs.Float64("budget", 20, "stop paid API generation once tonight's estimated spend reaches this many USD")
+	fs.Float64Var(budget, "budget-usd", 20, "same as -budget")
+	ledger := fs.String("ledger", "runs/ledger.jsonl", "append every API call's usage and estimated cost to this file")
+	prices := fs.String("prices", "", "price table JSON (default: the embedded, dated table)")
+	bucket := fs.String("bucket", "dss-model-study-aidetector-batch", "Cloud Storage bucket for Vertex batch input and output")
+	jobsFile := fs.String("jobs", "runs/batch-jobs.json", "batch: where submitted jobs are tracked")
 	fs.Parse(os.Args[2:])
 
 	corpus.Spend.Limit = *budget
+	if *prices != "" {
+		t, err := corpus.LoadPriceTable(*prices)
+		if err != nil {
+			log.Fatal(err)
+		}
+		corpus.Spend.Prices = t
+	}
+	if *ledger != "" {
+		if err := os.MkdirAll(filepath.Dir(*ledger), 0o755); err != nil {
+			log.Fatal(err)
+		}
+		if err := corpus.Spend.OpenLedger(*ledger); err != nil {
+			log.Fatal(err)
+		}
+	}
 	store := &corpus.Store{Root: *root}
 	selected := kinds
 	if *kind != "all" {
@@ -118,6 +145,8 @@ func main() {
 		}
 	case "ping":
 		err = runPing(ctx, *gens)
+	case "batch":
+		err = runBatch(ctx, fs.Args(), *gens, *bucket, *jobsFile)
 	default:
 		usage()
 	}
@@ -127,7 +156,7 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: corpus harvest|promote|mirror|variant|renormalize|stats|ping [flags]  (corpus <cmd> -h for flags)")
+	fmt.Fprintln(os.Stderr, "usage: corpus harvest|promote|mirror|variant|renormalize|stats|ping|batch|overnight [flags]  (corpus <cmd> -h for flags)")
 	os.Exit(2)
 }
 

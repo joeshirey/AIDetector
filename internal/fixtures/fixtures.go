@@ -287,3 +287,57 @@ func render(h string, markdown bool) string {
 	}
 	return strings.TrimSpace(blankRunsRE.ReplaceAllString(strings.Join(lines, "\n"), "\n\n")) + "\n"
 }
+
+// Scorer scores a text as prose and returns the document score and the
+// highest segment score (-1 if none).
+type Scorer func(text string) (doc, maxSeg int, label string, err error)
+
+// CheckResult is the regression check over known-human fixtures.
+type CheckResult struct {
+	KnownOver60, SegOver80, Missing int
+	Rows                            []CheckRow
+}
+
+type CheckRow struct {
+	ID, Label   string
+	Doc, MaxSeg int
+	Monitoring  bool
+	Reported    int
+}
+
+// Pass is the rule: at most one known-human fixture at 60+, and no
+// known-human segment at 80+.
+func (r CheckResult) Pass() bool { return r.KnownOver60 <= 1 && r.SegOver80 == 0 }
+
+// Check scores every cached fixture (paste-style text) with score.
+func Check(l *List, dir string, score Scorer) (CheckResult, error) {
+	var res CheckResult
+	run := func(fs []Fixture, monitoring bool) error {
+		for _, f := range fs {
+			txt, _ := Paths(dir, f)
+			b, err := os.ReadFile(txt)
+			if err != nil {
+				res.Missing++
+				continue
+			}
+			doc, seg, label, err := score(string(b))
+			if err != nil {
+				return err
+			}
+			res.Rows = append(res.Rows, CheckRow{ID: f.ID, Label: label, Doc: doc, MaxSeg: seg, Monitoring: monitoring, Reported: f.Reported})
+			if !monitoring {
+				if doc >= 60 {
+					res.KnownOver60++
+				}
+				if seg >= 80 {
+					res.SegOver80++
+				}
+			}
+		}
+		return nil
+	}
+	if err := run(l.KnownHuman, false); err != nil {
+		return res, err
+	}
+	return res, run(l.Monitoring, true)
+}
