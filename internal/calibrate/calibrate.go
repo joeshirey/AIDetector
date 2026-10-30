@@ -9,9 +9,22 @@ import (
 
 // Row is one labeled training example.
 type Row struct {
-	Feats map[string]float64 // signal name -> raw value
-	Words int
-	IsAI  bool
+	Feats  map[string]float64 // signal name -> raw value
+	Words  int
+	IsAI   bool
+	Weight float64 // sample weight; 0 means 1
+}
+
+func totalWeight(rows []Row) float64 {
+	n := 0.0
+	for _, r := range rows {
+		if r.Weight > 0 {
+			n += r.Weight
+		} else {
+			n++
+		}
+	}
+	return n
 }
 
 // Model is a standardized logistic regression. Signals absent from a text
@@ -160,12 +173,15 @@ func Fit(kind string, rows []Row) *Model {
 				z += w[j] * xv
 			}
 			err := 1/(1+math.Exp(-z)) - label(r)
+			if r.Weight > 0 {
+				err *= r.Weight
+			}
 			for j, xv := range x[i] {
 				grad[j] += err * xv
 			}
 			gb += err
 		}
-		n := float64(len(rows))
+		n := totalWeight(rows)
 		for j := range w {
 			w[j] -= lr * (grad[j]/n + l2*w[j])
 		}

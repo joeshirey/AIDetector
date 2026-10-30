@@ -1,6 +1,7 @@
 package overnight
 
 import (
+	"fmt"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -14,49 +15,100 @@ import (
 
 func passingFixtures() fixtures.CheckResult { return fixtures.CheckResult{} }
 
-func baseMetrics() *Metrics {
-	return &Metrics{
-		Test:     map[string]AR{"prose": {AUROC: 0.98, Recall1: 0.80}},
-		PoolDoc:  map[string][2]float64{"fresh-blog": {0.02, 0.005}},
-		PoolSeg:  map[string]float64{"fresh-blog": 0.01},
-		PoolN:    map[string][2]int{"fresh-blog": {1000, 5000}},
-		Fixtures: passingFixtures(),
-		Frozen:   map[string]AR{"claude-opus-5-5/prose": {AUROC: 0.95, Recall1: 0.60}},
-		Slices:   map[string]AR{"gemini-3.8-flash/prose": {AUROC: 0.97}},
+// synthMetrics builds metrics with per-sample data: a pool of n human
+// documents (fp of them at 60+, fp80 at 80+, each with 3 segments) and a
+// test set of human/AI raw scores.
+func synthMetrics(n, fp, fp80 int, human, ai []float64) *Metrics {
+	m := &Metrics{Test: map[string]AR{}, PoolDocs: map[string][]PoolDoc{}, Frozen: map[string]AR{}, Slices: map[string]AR{},
+		Fixtures: passingFixtures()}
+	for i := range n {
+		d := PoolDoc{ID: fmt.Sprintf("doc%04d", i), Score: 10, Segs: []int{10, 10, 10}}
+		if i < fp {
+			d.Score, d.Segs[0] = 65, 65
+		}
+		if i < fp80 {
+			d.Score = 85
+		}
+		m.PoolDocs["fresh-blog"] = append(m.PoolDocs["fresh-blog"], d)
 	}
+	ar := AR{}
+	for i, v := range human {
+		ar.S = append(ar.S, RankSample{Key: fmt.Sprintf("h%d", i), Group: fmt.Sprintf("s%d", i), Raw: v})
+	}
+	for i, v := range ai {
+		ar.S = append(ar.S, RankSample{Key: fmt.Sprintf("a%d", i), Group: fmt.Sprintf("s%d", i), AI: true, Raw: v})
+	}
+	m.Test["prose"] = ar
+	return m
 }
 
-func TestGateTolerances(t *testing.T) {
-	prod := baseMetrics()
-	same := baseMetrics()
-	if _, ok := Gate(prod, same); !ok {
+func scores(r *rand.Rand, n int, mean float64) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		out[i] = mean + r.NormFloat64()*15
+	}
+	return out
+}
+
+func TestGate(t *testing.T) {
+	r := rand.New(rand.NewPCG(1, 2))
+	h, a := scores(r, 400, 20), scores(r, 400, 75)
+	base := synthMetrics(1000, 20, 5, h, a)
+	if _, ok := Gate(base, synthMetrics(1000, 20, 5, h, a)); !ok {
 		t.Fatal("identical candidate should pass")
 	}
-	cases := map[string]func(m *Metrics){
-		"test AUROC drop":    func(m *Metrics) { m.Test["prose"] = AR{AUROC: 0.977, Recall1: 0.80} },
-		"test recall drop":   func(m *Metrics) { m.Test["prose"] = AR{AUROC: 0.98, Recall1: 0.789} },
-		"pool FPR rise":      func(m *Metrics) { m.PoolDoc["fresh-blog"] = [2]float64{0.022, 0.005} }, // two docs
-		"segment FPR rise":   func(m *Metrics) { m.PoolSeg["fresh-blog"] = 0.0104 },                   // two segments
-		"fixtures fail":      func(m *Metrics) { m.Fixtures = fixtures.CheckResult{SegOver80: 1} },
-		"frozen recall drop": func(m *Metrics) { m.Frozen["claude-opus-5-5/prose"] = AR{AUROC: 0.95, Recall1: 0.589} },
-		"slice AUROC drop":   func(m *Metrics) { m.Slices["gemini-3.8-flash/prose"] = AR{AUROC: 0.964} },
-		"missing frozen set": func(m *Metrics) { delete(m.Frozen, "claude-opus-5-5/prose") },
+	if _, ok := Gate(base, synthMetrics(1000, 21, 5, h, a)); !ok {
+		t.Error("one extra false positive in 1000 should pass")
 	}
-	for name, mutate := range cases {
-		c := baseMetrics()
-		mutate(c)
-		if _, ok := Gate(prod, c); ok {
-			t.Errorf("%s: candidate should be rejected", name)
+	if _, ok := Gate(base, synthMetrics(1000, 60, 5, h, a)); ok {
+		t.Error("false positives tripling (2% -> 6%) should fail")
+	}
+	worseAI := make([]float64, len(a))
+	for i, v := range a {
+		worseAI[i] = v - 25
+	}
+	if _, ok := Gate(base, synthMetrics(1000, 20, 5, h, worseAI)); ok {
+		t.Error("a large AUROC drop should fail")
+	}
+	noFrozen := synthMetrics(1000, 20, 5, h, a)
+	withFrozen := synthMetrics(1000, 20, 5, h, a)
+	withFrozen.Frozen["x/prose"] = withFrozen.Test["prose"]
+	if _, ok := Gate(withFrozen, noFrozen); ok {
+		t.Error("a frozen set missing from the candidate should fail")
+	}
+	missingFix := synthMetrics(1000, 20, 5, h, a)
+	missingFix.Fixtures.Missing = 3
+	if _, ok := Gate(base, missingFix); ok {
+		t.Error("missing fixtures should fail")
+	}
+	// Neutral candidates: every score jittered independently, nothing
+	// systematically worse. The Holm-corrected gate should reject few.
+	rejected := 0
+	const trials = 30
+	for range trials {
+		jit := func(xs []float64) []float64 {
+			out := make([]float64, len(xs))
+			for i, v := range xs {
+				out[i] = v + r.NormFloat64()*3
+			}
+			return out
+		}
+		c := synthMetrics(1000, 20, 5, jit(h), jit(a))
+		// Pool: move a few documents across 60 in both directions.
+		for k := range 3 {
+			i := r.IntN(1000)
+			if c.PoolDocs["fresh-blog"][i].Score < 60 {
+				c.PoolDocs["fresh-blog"][i].Score = 61
+			}
+			c.PoolDocs["fresh-blog"][k].Score = 50
+		}
+		if _, ok := Gate(base, c); !ok {
+			rejected++
 		}
 	}
-	ok := baseMetrics()
-	ok.Test["prose"] = AR{AUROC: 0.9985, Recall1: 0.791} // within -0.002 and -1 point
-	ok.Frozen["claude-opus-5-5/prose"] = AR{AUROC: 0.941, Recall1: 0.591}
-	ok.Slices["gemini-3.8-flash/prose"] = AR{AUROC: 0.966}
-	ok.PoolDoc["fresh-blog"] = [2]float64{0.021, 0.006} // one more document at each level
-	ok.PoolSeg["fresh-blog"] = 0.0102                   // one more segment
-	if checks, pass := Gate(prod, ok); !pass {
-		t.Fatalf("within tolerance should pass: %+v", checks)
+	t.Logf("neutral candidates rejected %d/%d", rejected, trials)
+	if rejected > 4 { // ~5% expected; 4/30 leaves room for sampling noise
+		t.Errorf("neutral candidates rejected %d/%d times", rejected, trials)
 	}
 }
 

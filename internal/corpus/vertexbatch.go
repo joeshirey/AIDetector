@@ -367,6 +367,9 @@ func parseResultLine(s Spec, line []byte) (BatchResult, bool) {
 			}
 		}
 		r.Refused = c.FinishReason == "SAFETY" || c.FinishReason == "PROHIBITED_CONTENT"
+		if c.FinishReason == "MAX_TOKENS" {
+			r.Err = "output truncated at the token limit"
+		}
 		return r, true
 	}
 	return r, false

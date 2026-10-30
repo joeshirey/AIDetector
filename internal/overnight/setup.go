@@ -275,3 +275,105 @@ func ksStat(a, b []float64) float64 {
 	}
 	return d
 }
+
+// PairedEffort compares default and low effort on the same sources: the
+// mean paired difference in raw score (default minus low) with a 95%
+// interval, and a Wilcoxon signed-rank p-value (normal approximation),
+// per model and per detector kind. Low effort is "equivalent" when the
+// whole interval lies within ±margin raw points.
+type PairedEffortRow struct {
+	Model, Kind   string
+	N             int
+	MeanDiff      float64
+	CILow, CIHigh float64
+	WilcoxonP     float64
+	Equivalent    bool
+	WordsDefault  float64 // mean words
+	WordsLow      float64
+}
+
+func PairedEffort(ctx context.Context, d Data, margin float64) ([]PairedEffortRow, error) {
+	e := engine.Default()
+	root := d.Path("runs", "effort")
+	var out []PairedEffortRow
+	for _, spec := range EffortModels {
+		s, _ := corpus.ParseSpec(spec)
+		for _, k := range []detect.Kind{detect.KindProse, detect.KindPR} {
+			r := PairedEffortRow{Model: s.Model, Kind: string(k)}
+			var diffs []float64
+			var wd, wl float64
+			for _, g := range Genres {
+				if g.Det != k {
+					continue
+				}
+				files, _ := filepath.Glob(filepath.Join(root, g.Name, "ai", s.Model, "*.txt"))
+				for _, f := range files {
+					lowPath := filepath.Join(root, g.Name, "ai", s.Model+"@low", filepath.Base(f))
+					if _, err := os.Stat(lowPath); err != nil {
+						continue
+					}
+					a, err1 := e.Analyze(ctx, detect.Input{Text: readText(f), Kind: k})
+					b, err2 := e.Analyze(ctx, detect.Input{Text: readText(lowPath), Kind: k})
+					if err1 != nil || err2 != nil {
+						continue
+					}
+					diffs = append(diffs, a.Raw-b.Raw)
+					wd += float64(a.WordCount)
+					wl += float64(b.WordCount)
+				}
+			}
+			r.N = len(diffs)
+			if r.N < 3 {
+				out = append(out, r)
+				continue
+			}
+			m := mean(diffs)
+			ss := 0.0
+			for _, x := range diffs {
+				ss += (x - m) * (x - m)
+			}
+			se := math.Sqrt(ss/float64(r.N-1)) / math.Sqrt(float64(r.N))
+			r.MeanDiff, r.CILow, r.CIHigh = m, m-2*se, m+2*se
+			r.WilcoxonP = wilcoxon(diffs)
+			r.Equivalent = r.CILow > -margin && r.CIHigh < margin
+			r.WordsDefault, r.WordsLow = wd/float64(r.N), wl/float64(r.N)
+			out = append(out, r)
+		}
+	}
+	return out, nil
+}
+
+// wilcoxon is the two-sided signed-rank p-value (normal approximation,
+// zero differences dropped, ties averaged).
+func wilcoxon(d []float64) float64 {
+	type v struct{ abs, sign float64 }
+	var xs []v
+	for _, x := range d {
+		if x != 0 {
+			xs = append(xs, v{math.Abs(x), math.Copysign(1, x)})
+		}
+	}
+	n := len(xs)
+	if n == 0 {
+		return 1
+	}
+	sort.Slice(xs, func(i, j int) bool { return xs[i].abs < xs[j].abs })
+	w := 0.0
+	for i := 0; i < n; {
+		j := i
+		for j < n && xs[j].abs == xs[i].abs {
+			j++
+		}
+		rank := float64(i+j+1) / 2
+		for k := i; k < j; k++ {
+			if xs[k].sign > 0 {
+				w += rank
+			}
+		}
+		i = j
+	}
+	nf := float64(n)
+	mu, sd := nf*(nf+1)/4, math.Sqrt(nf*(nf+1)*(2*nf+1)/24)
+	z := math.Abs(w-mu) / sd
+	return math.Erfc(z / math.Sqrt2)
+}

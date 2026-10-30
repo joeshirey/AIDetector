@@ -56,7 +56,7 @@ type GenreReport struct {
 type labeled struct {
 	genre string
 	text  string
-	raw   int
+	raw   float64
 	human bool
 	calib bool
 }
@@ -84,9 +84,9 @@ func MeasureGenres(ctx context.Context, e *engine.Engine, d Data) (*GenreReport,
 		if err != nil {
 			return nil, err
 		}
-		var calib, check []int
+		var calib, check []float64
 		for _, s := range hs {
-			isCalib := split.Hash(s.ID)%2 == 0
+			isCalib := split.Calib(s.ID)
 			if isCalib {
 				calib = append(calib, s.Raw)
 			} else {
@@ -101,7 +101,7 @@ func MeasureGenres(ctx context.Context, e *engine.Engine, d Data) (*GenreReport,
 		if err != nil {
 			return nil, err
 		}
-		var aiRaw []int
+		var aiRaw []float64
 		for _, s := range ai {
 			aiRaw = append(aiRaw, s.Raw)
 			items = append(items, labeled{genre: name, text: readText(s.Path), raw: s.Raw})
@@ -154,7 +154,7 @@ func MeasureGenres(ctx context.Context, e *engine.Engine, d Data) (*GenreReport,
 		}
 		for scheme, cut := range map[string]int{"shared": shared.LikelyAI, "true genre": own[it.genre].LikelyAI, "detected genre": routed} {
 			flag := 0
-			if it.raw >= cut {
+			if it.raw >= float64(cut) {
 				flag = 1
 			}
 			if it.human {
@@ -258,7 +258,7 @@ func MeasurePolished(ctx context.Context, e *engine.Engine, d Data) ([]LabelDist
 		if g.Store != "corpus" {
 			continue
 		}
-		for _, set := range []string{"ai_polished", "ai_humanized"} {
+		for _, set := range []string{"ai_polished", "ai_humanized", "ai_edited"} {
 			dir := filepath.Join(d.Dir(g), set)
 			ld := LabelDist{Set: g.Name + "/" + set, Labels: map[string]int{}}
 			err := filepath.WalkDir(dir, func(p string, de os.DirEntry, err error) error {
@@ -299,7 +299,9 @@ type LOFORow struct {
 	Err        string
 }
 
-var LOFOFamilies = []string{"claude", "gemini", "qwen", "gpt", "gemma"}
+// Gemma has no test-split text (its held-out text is the frozen set, which
+// the gate already measures), so it isn't a LOFO family.
+var LOFOFamilies = []string{"claude", "gemini", "qwen", "gpt"}
 
 // LeaveOneFamilyOut refits each kind without one generator family at a time
 // (no LM features, so it runs on CPU) under dir, and scores that family's
@@ -386,9 +388,9 @@ func Flips(ctx context.Context, w io.Writer, d Data, prod, cand *engine.Engine, 
 		meanA, meanB := 0.0, 0.0
 		for _, s := range b {
 			p := byID[s.ID]
-			meanA += float64(p.Raw)
-			meanB += float64(s.Raw)
-			line := fmt.Sprintf("  %-50s prod %3d (raw %3d)  cand %3d (raw %3d)", s.ID, p.Score, p.Raw, s.Score, s.Raw)
+			meanA += p.Raw
+			meanB += s.Raw
+			line := fmt.Sprintf("  %-50s prod %3d (raw %5.1f)  cand %3d (raw %5.1f)", s.ID, p.Score, p.Raw, s.Score, s.Raw)
 			switch {
 			case s.Score >= 60 && p.Score < 60:
 				up = append(up, line)

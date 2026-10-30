@@ -37,7 +37,7 @@ var TrainStyles = []Style{StylePlain, StylePersona, StyleContinue}
 // Bands are output length bands in words. PR descriptions are much shorter
 // than prose, so they use their own bands.
 var (
-	ProseBands = [][2]int{{150, 300}, {300, 600}, {600, 1200}}
+	ProseBands = [][2]int{{150, 300}, {300, 600}, {600, 1200}, {50, 150}} // short band last so existing band indexes keep their meaning
 	PRBands    = [][2]int{{25, 150}, {150, 300}, {300, 1200}}
 )
 
@@ -429,6 +429,10 @@ func (b *Bandit) Pick(cells []Cell, floor float64) Cell {
 func (b *Bandit) GenShares(base map[string]float64, floor, capMult float64) map[string]float64 {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	baseSum := 0.0
+	for _, v := range base {
+		baseSum += v
+	}
 	w := map[string]float64{}
 	total := 0.0
 	for g, share := range base {
@@ -437,20 +441,37 @@ func (b *Bandit) GenShares(base map[string]float64, floor, capMult float64) map[
 		if s != nil {
 			miss, n = s.Miss, s.N
 		}
-		w[g] = share * (0.5 + b.sampleBeta(float64(1+miss), float64(1+n-miss)))
+		w[g] = share / baseSum * (0.5 + b.sampleBeta(float64(1+miss), float64(1+n-miss)))
 		total += w[g]
 	}
 	out := map[string]float64{}
 	for g := range w {
-		out[g] = min(max(w[g]/total, floor), base[g]*capMult)
+		out[g] = w[g] / total
 	}
-	// Renormalize after clamping.
-	sum := 0.0
-	for _, v := range out {
-		sum += v
-	}
-	for g := range out {
-		out[g] /= sum
+	// Clamp to [floor, capMult x base share] and hand the excess or deficit
+	// to the unclamped generators, until nothing moves.
+	for range 20 {
+		fixed, free, freeSum := 0.0, []string{}, 0.0
+		for g, v := range out {
+			hi := base[g] / baseSum * capMult
+			switch {
+			case v < floor:
+				out[g] = floor
+				fixed += floor
+			case v > hi:
+				out[g] = hi
+				fixed += hi
+			default:
+				free = append(free, g)
+				freeSum += v
+			}
+		}
+		if len(free) == 0 || freeSum == 0 || len(free) == len(out) {
+			break
+		}
+		for _, g := range free {
+			out[g] *= (1 - fixed) / freeSum
+		}
 	}
 	return out
 }
@@ -463,8 +484,12 @@ type Planner struct {
 	Bandit  *Bandit
 	Floor   float64
 	planned map[string]bool
-	rng     *rand.Rand
-	mu      sync.Mutex
+	// unmatched are train-split human sources with no AI mirror at all
+	// (e.g. freshly promoted pool texts). They're paired first, with a plain
+	// mirror, so the human side never goes in unpaired.
+	unmatched []Source
+	rng       *rand.Rand
+	mu        sync.Mutex
 }
 
 func NewPlanner(d Data, b *Bandit, genres []Genre) (*Planner, error) {
@@ -476,6 +501,15 @@ func NewPlanner(d Data, b *Bandit, genres []Genre) (*Planner, error) {
 			return nil, err
 		}
 		p.Sources[g.Name] = s
+		for _, band := range sortedInts(s) {
+			for _, src := range s[band] {
+				a, _ := filepath.Glob(filepath.Join(d.Dir(g), "ai", "*", src.Sample.ID+".txt"))
+				b, _ := filepath.Glob(filepath.Join(d.Dir(g), "ai", "*", src.Sample.ID+"~*.txt"))
+				if len(a)+len(b) == 0 {
+					p.unmatched = append(p.unmatched, src)
+				}
+			}
+		}
 	}
 	return p, nil
 }
@@ -506,6 +540,16 @@ func (p *Planner) cellsFor(gen string) []Cell {
 func (p *Planner) Next(gen string) (Cell, Source, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	for len(p.unmatched) > 0 {
+		s := p.unmatched[0]
+		p.unmatched = p.unmatched[1:]
+		key := gen + "|" + string(StylePlain) + "|" + s.Sample.ID
+		if p.planned[key] {
+			continue
+		}
+		p.planned[key] = true
+		return Cell{Genre: s.Genre.Name, Band: s.Band, Style: StylePlain, Gen: gen}, s, true
+	}
 	cells := p.cellsFor(gen)
 	if len(cells) == 0 {
 		return Cell{}, Source{}, false

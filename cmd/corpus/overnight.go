@@ -73,6 +73,10 @@ func runOvernight(ctx context.Context, args []string) error {
 	excludeSince := fs.String("exclude-since", "", "gate: leave AI generations written after this time (RFC 3339) out of the candidate")
 	excludeGen := fs.String("exclude-gen", "", "gate: with -exclude-since, only generations from generator directories starting with this")
 	excludeHumanSince := fs.String("exclude-human-since", "", "gate: leave human training files added after this time (RFC 3339; e.g. promotions) out of the candidate")
+	candDir := fs.String("candidate", "", "gate: gate an existing candidate directory instead of fitting one")
+	weighting := fs.String("weighting", "", "gate: sample weighting for the candidate fit: \"\" or source (each source and its mirrors weigh the same)")
+	denseL2 := fs.Bool("dense-l2", false, "gate: fit with experimental dense word-pattern regularization")
+	shipped := fs.Bool("shipped", false, "gate: compare against production's shipped cutoffs instead of a recalibrated baseline")
 	keepCutoffs := fs.Bool("keep-cutoffs", false, "gate: keep production's label cutoffs instead of recalibrating (diagnostic)")
 	outName := fs.String("name", "manual", "gate: candidate directory under -run-root; flips: candidate directory to compare")
 	pools := fs.String("pools", "fresh-blog,nontech-medium,tech-pool,fresh-memo", "flips: fresh pools to compare")
@@ -179,7 +183,7 @@ func runOvernight(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		c := &overnight.Collector{Data: d, Batcher: b, Jobs: jobs, Log: logw}
+		c := &overnight.Collector{Data: d, Batcher: b, Jobs: jobs, Log: logw, OnWrite: overnight.QueueForScoring(abs(*runRoot))}
 		done, carried, err := c.Collect(ctx, night)
 		fmt.Printf("collected %d jobs, %d still running\n", done, carried)
 		return err
@@ -278,11 +282,25 @@ func runOvernight(ctx context.Context, args []string) error {
 			return err
 		}
 		start := time.Now()
-		prod, err := overnight.Measure(ctx, engine.Default(), d, fl, abs(*fixDir))
+		// Baseline: production's models with cutoffs refit the same way as
+		// the candidate's (cached; delete the directory to redo it).
+		base := engine.Default()
+		if !*shipped {
+			bdir := filepath.Join(abs(*runRoot), "baseline")
+			if _, err := os.Stat(filepath.Join(bdir, "thresholds.json")); err != nil {
+				if err := overnight.ProductionBaseline(ctx, d, bdir); err != nil {
+					return err
+				}
+			}
+			if base, err = engine.FromDir(bdir); err != nil {
+				return err
+			}
+		}
+		prod, err := overnight.Measure(ctx, base, d, fl, abs(*fixDir))
 		if err != nil {
 			return err
 		}
-		fmt.Printf("production measured in %s\n", time.Since(start).Round(time.Second))
+		fmt.Printf("baseline measured in %s\n", time.Since(start).Round(time.Second))
 		dir := filepath.Join(abs(*runRoot), *outName)
 		start = time.Now()
 		var rules []func(path, id string) bool
@@ -329,7 +347,13 @@ func runOvernight(ctx context.Context, args []string) error {
 			}
 			return false
 		}
-		if err := overnight.RetrainCandidate(ctx, d, dir, exclude, *keepCutoffs); err != nil {
+		if *candDir != "" {
+			dir = *candDir
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(abs(*runRoot), dir)
+			}
+		} else if err := overnight.RetrainCandidate(ctx, d, dir, overnight.FitOptions{Exclude: exclude, KeepCutoffs: *keepCutoffs,
+			Weighting: *weighting, DenseL2: *denseL2}); err != nil {
 			return err
 		}
 		fmt.Printf("candidate fit in %s\n", time.Since(start).Round(time.Second))
@@ -341,9 +365,12 @@ func runOvernight(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		if b, err := json.Marshal(cm); err == nil {
+			os.WriteFile(filepath.Join(dir, "metrics.json"), b, 0o644)
+		}
 		checks, ok := overnight.Gate(prod, cm)
 		for _, c := range checks {
-			fmt.Printf("%-5v %-48s %.4f -> %.4f\n", c.Pass, c.Name, c.Before, c.After)
+			fmt.Printf("%-5v %-48s %.4f -> %.4f  p=%.3f\n", c.Pass, c.Name, c.Before, c.After, c.P)
 		}
 		fmt.Printf("accepted: %v (candidate in %s)\n", ok, dir)
 		return nil
@@ -358,6 +385,30 @@ func runOvernight(ctx context.Context, args []string) error {
 			return err
 		}
 		return overnight.Flips(ctx, os.Stdout, d, engine.Default(), cand, strings.Split(*pools, ","))
+
+	case "effort-paired":
+		rows, err := overnight.PairedEffort(ctx, d, 3)
+		if err != nil {
+			return err
+		}
+		fmt.Println("| Model | Kind | Pairs | Mean raw diff (default−low) | 95% CI | Wilcoxon p | Within ±3 | Words default/low |")
+		fmt.Println("|---|---|---:|---:|---|---:|---|---|")
+		for _, r := range rows {
+			fmt.Printf("| %s | %s | %d | %+.2f | [%+.2f, %+.2f] | %.3f | %v | %.0f/%.0f |\n", r.Model, r.Kind, r.N, r.MeanDiff, r.CILow, r.CIHigh, r.WilcoxonP, r.Equivalent, r.WordsDefault, r.WordsLow)
+		}
+		return nil
+
+	case "redraw-holdout":
+		m, err := d.LoadManifest()
+		if err != nil {
+			return err
+		}
+		p, h, err := d.RedrawHoldout(m)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("fresh-pools %d files, final-holdout %d files\n", p, h)
+		return nil
 
 	case "approve":
 		p := filepath.Join(abs(*runRoot), "full-budget-approved")

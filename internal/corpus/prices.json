@@ -1,10 +1,11 @@
 {
-  "updated": "2026-10-28",
+  "updated": "2026-10-29",
   "batch_multiplier": 0.55,
+  "batch_by_prefix": {"gemini": 0.50},
   "unknown": {"from": "2000-01-01", "in": 10, "out": 50, "note": "any model not listed is charged at a flagship rate"},
   "models": {
     "claude-haiku-5-5": [
-      {"from": "2026-01-01", "in": 0.80, "out": 4.00, "cache_in": 0.08, "note": "Vertex partner price per web search 2026-10-28; first-party API is 0.10/0.50. Using the higher figure until a Vertex bill confirms."}
+      {"from": "2026-01-01", "in": 0.10, "out": 0.50, "cache_in": 0.01, "note": "Vertex list price (global), checked 2026-10-29; the 0.80/4.00 used before was a legacy Haiku rate"}
     ],
     "claude-sonnet-5-5": [
       {"from": "2026-01-01", "in": 2.00, "out": 10.00, "cache_in": 0.20, "note": "matches the starting value"}

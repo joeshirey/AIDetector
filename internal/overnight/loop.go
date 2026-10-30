@@ -148,6 +148,9 @@ func Run(ctx context.Context, cfg Config) (reportPath string, err error) {
 	night := corpus.NightOf(time.Now())
 	l := &Loop{Cfg: cfg, Night: night.Format("2006-01-02"), rng: rand.New(rand.NewPCG(stableSeed(night.Format("2006-01-02")), 1))}
 	l.dir = filepath.Join(cfg.RunRoot, l.Night)
+	if cfg.DryRun {
+		l.dir += "-dry-run" // never shares state with the night's full run
+	}
 	if err := os.MkdirAll(l.dir, 0o755); err != nil {
 		return "", err
 	}
@@ -270,14 +273,20 @@ func (l *Loop) batcher(ctx context.Context) (*corpus.Batcher, *Jobs, error) {
 func (l *Loop) pendingPath() string { return filepath.Join(l.Cfg.RunRoot, "pending.jsonl") }
 
 // recordWrite queues a generated file for scoring (bandit feedback).
-func (l *Loop) recordWrite(r GenRecord) {
-	f, err := os.OpenFile(l.pendingPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
+func (l *Loop) recordWrite(r GenRecord) { QueueForScoring(l.Cfg.RunRoot)(r) }
+
+// QueueForScoring returns a Collector.OnWrite that queues generated files
+// in runRoot/pending.jsonl; the next night scores them for the bandit.
+func QueueForScoring(runRoot string) func(GenRecord) {
+	return func(r GenRecord) {
+		f, err := os.OpenFile(filepath.Join(runRoot, "pending.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		b, _ := json.Marshal(r)
+		f.Write(append(b, '\n'))
 	}
-	defer f.Close()
-	b, _ := json.Marshal(r)
-	f.Write(append(b, '\n'))
 }
 
 func (l *Loop) collect(ctx context.Context) error {
@@ -290,8 +299,18 @@ func (l *Loop) collect(ctx context.Context) error {
 	return err
 }
 
+// baseline measures production's models with their cutoffs refit the same
+// way candidates' are, so the gate compares like with like.
 func (l *Loop) baseline(ctx context.Context, rep *Report) error {
-	m, err := Measure(ctx, l.prod, l.Cfg.Data, l.fixList, l.Cfg.FixturesDir)
+	dir := filepath.Join(l.dir, "baseline")
+	if err := ProductionBaseline(ctx, l.Cfg.Data, dir); err != nil {
+		return err
+	}
+	base, err := engine.FromDir(dir)
+	if err != nil {
+		return err
+	}
+	m, err := Measure(ctx, base, l.Cfg.Data, l.fixList, l.Cfg.FixturesDir)
 	if err != nil {
 		return err
 	}
@@ -463,15 +482,28 @@ func (l *Loop) submitPaid(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// Shares are of samples, not dollars: find the sample total whose cost
+	// at each generator's typical per-request price fits the pot.
 	names := sortedKeys(shares)
+	gens := map[string]corpus.Generator{}
+	perReq := map[string]float64{}
+	costPerSample := 0.0
 	for _, name := range names {
-		gens, err := corpus.NewGenerators(ctx, byName[name])
+		gs, err := corpus.NewGenerators(ctx, byName[name])
 		if err != nil {
 			return err
 		}
-		gen := gens[0]
-		alloc := min(pot*shares[name], corpus.Spend.Headroom(gen.Spec().Model))
-		reqs, est := PlanPaid(ctx, p, br, gen, alloc, l.Cfg.MaxNew, l.rng)
+		gens[name] = gs[0]
+		s := gs[0].Spec()
+		perReq[name] = corpus.Spend.Cost(s.Model, corpus.ModeBatch, EstimateUsage(s, strings.Repeat("word ", 700), 450))
+		costPerSample += shares[name] * perReq[name]
+	}
+	total := pot / max(costPerSample, 1e-9)
+	for _, name := range names {
+		gen := gens[name]
+		n := min(int(total*shares[name]), l.Cfg.MaxNew)
+		alloc := min(float64(n)*perReq[name]*1.5, corpus.Spend.Headroom(gen.Spec().Model)) // slack for long prompts
+		reqs, est := PlanPaid(ctx, p, br, gen, alloc, n, l.rng)
 		t, err := SubmitPaid(ctx, b, jobs, gen.Spec(), l.Night, "train", reqs)
 		if err != nil {
 			l.note("%s: batch not submitted: %v", name, err)
@@ -588,7 +620,7 @@ func (l *Loop) retrain(ctx context.Context, n int) Round {
 	dir := filepath.Join(l.dir, fmt.Sprintf("round-%d", n))
 	r := Round{N: n, Dir: dir, Samples: countTraining(l.Cfg.Data)}
 	l.logf("round %d: fitting candidate on %d training files", n, r.Samples)
-	if err := RetrainCandidate(ctx, l.Cfg.Data, dir, nil, false); err != nil {
+	if err := RetrainCandidate(ctx, l.Cfg.Data, dir, FitOptions{Weighting: "source"}); err != nil {
 		r.Err = err.Error()
 		return r
 	}

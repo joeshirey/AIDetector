@@ -32,6 +32,26 @@ type FitResult struct {
 // of dirs (samples keep accepts) and writes them to outDir. Features come
 // from the heuristic engine, so fitting never depends on a previous model.
 func Fit(ctx context.Context, kind detect.Kind, dirs []string, outDir string, withLM bool, keep eval.Keep) (*FitResult, error) {
+	return FitWith(ctx, kind, dirs, outDir, FitOptions{Keep: keep, WithLM: withLM})
+}
+
+// FitOptions controls FitWith.
+type FitOptions struct {
+	Keep   eval.Keep
+	WithLM bool
+	// Weighting "source" gives each human source and its AI mirrors equal
+	// total weight: the human file counts 1 and each of its K mirrors 1/K.
+	// "" counts every file once.
+	Weighting string
+	// DenseL2 decays every word-pattern weight at every step (see
+	// ngram.TrainOptions). At the default strength it cut recall by about 1.5
+	// points on 2026-10-29, so it stays off until the strength is retuned.
+	DenseL2 bool
+}
+
+// FitWith fits a kind's word-pattern model and calibrated model.
+func FitWith(ctx context.Context, kind detect.Kind, dirs []string, outDir string, o FitOptions) (*FitResult, error) {
+	keep, withLM := o.Keep, o.WithLM
 	he := engine.Heuristic()
 	if withLM && he.Scorer() == nil {
 		return nil, fmt.Errorf("-lm needs a running scorer at $AIDETECTOR_SCORER_URL")
@@ -56,7 +76,20 @@ func Fit(ctx context.Context, kind detect.Kind, dirs []string, outDir string, wi
 		if err != nil {
 			return nil, err
 		}
-		docs[i], labels[i] = string(b), s.IsAI
+		// The word-pattern model sees the same prepared text as at scoring time.
+		docs[i], labels[i] = engine.Prepare(kind, string(b)), s.IsAI
+	}
+	weights := sampleWeights(r.Samples, o.Weighting)
+	nopts := func(idx []int) ngram.TrainOptions {
+		t := ngram.DefaultTrainOptions()
+		t.DenseL2 = o.DenseL2
+		if weights != nil {
+			t.Weights = make([]float64, len(idx))
+			for k, i := range idx {
+				t.Weights[k] = weights[i]
+			}
+		}
+		return t
 	}
 	// Word-pattern scores for the calibration step come from 5-fold
 	// out-of-fold models, so the calibrator sees how the classifier does on
@@ -66,19 +99,24 @@ func Fit(ctx context.Context, kind detect.Kind, dirs []string, outDir string, wi
 	for f := range folds {
 		var trDocs []string
 		var trLabels []bool
+		var trIdx []int
 		for i, s := range r.Samples {
 			if Fold(s.ID, folds) != f {
-				trDocs, trLabels = append(trDocs, docs[i]), append(trLabels, labels[i])
+				trDocs, trLabels, trIdx = append(trDocs, docs[i]), append(trLabels, labels[i]), append(trIdx, i)
 			}
 		}
-		fm := ngram.Train(string(kind), trDocs, trLabels, ngram.DefaultTrainOptions())
+		fm := ngram.Train(string(kind), trDocs, trLabels, nopts(trIdx))
 		for i, s := range r.Samples {
 			if Fold(s.ID, folds) == f {
 				oof[i], _ = fm.Logit(docs[i])
 			}
 		}
 	}
-	words := ngram.Train(string(kind), docs, labels, ngram.DefaultTrainOptions())
+	all := make([]int, len(docs))
+	for i := range all {
+		all[i] = i
+	}
+	words := ngram.Train(string(kind), docs, labels, nopts(all))
 	rows := make([]calibrate.Row, len(r.Samples))
 	for i, s := range r.Samples {
 		feats := map[string]float64{"word_patterns": oof[i]}
@@ -86,6 +124,9 @@ func Fit(ctx context.Context, kind detect.Kind, dirs []string, outDir string, wi
 			feats[n] = v
 		}
 		rows[i] = calibrate.Row{Feats: feats, Words: s.Words, IsAI: s.IsAI}
+		if weights != nil {
+			rows[i].Weight = weights[i]
+		}
 	}
 	m := calibrate.Fit(string(kind), rows)
 	res := &FitResult{Model: m, Words: words, Human: r.Human, AI: r.AI,
@@ -100,6 +141,40 @@ func Fit(ctx context.Context, kind detect.Kind, dirs []string, outDir string, wi
 		return nil, err
 	}
 	return res, WriteJSON(res.NgramPath, words)
+}
+
+// sampleWeights implements FitOptions.Weighting. Groups are a genre
+// directory plus the source id (split.Base strips style suffixes), so a
+// human text and all of its mirrors form one group.
+func sampleWeights(samples []eval.Sample, mode string) []float64 {
+	if mode != "source" {
+		return nil
+	}
+	sep := string(filepath.Separator)
+	group := func(s eval.Sample) string {
+		root := s.Path
+		for _, d := range []string{sep + "human" + sep, sep + "ai" + sep} {
+			if i := strings.Index(root, d); i >= 0 {
+				root = root[:i]
+				break
+			}
+		}
+		return root + "|" + split.Base(s.ID)
+	}
+	mirrors := map[string]int{}
+	for _, s := range samples {
+		if s.IsAI {
+			mirrors[group(s)]++
+		}
+	}
+	w := make([]float64, len(samples))
+	for i, s := range samples {
+		w[i] = 1
+		if s.IsAI {
+			w[i] = 1 / float64(mirrors[group(s)])
+		}
+	}
+	return w
 }
 
 // Fold assigns a sample to one of n cross-validation folds by id, so a human
@@ -117,8 +192,10 @@ func WriteJSON(path string, v any) error {
 // Scored is one human file's raw document score and raw segment scores.
 type Scored struct {
 	Path, ID, Label string
-	Score, Raw      int
-	Segs, SegRaw    []int
+	Score           int
+	Raw             float64 // unrounded, as the scale uses it
+	Segs            []int
+	SegRaw          []float64
 	SegPreview      []string
 }
 
@@ -145,10 +222,10 @@ func ScoreFiles(ctx context.Context, e *engine.Engine, dirs []string, kind detec
 			if err != nil {
 				return nil, err
 			}
-			sc := Scored{Path: p, ID: id, Label: res.Label, Score: res.Score, Raw: res.RawScore}
+			sc := Scored{Path: p, ID: id, Label: res.Label, Score: res.Score, Raw: res.Raw}
 			for _, s := range res.Segments {
 				sc.Segs = append(sc.Segs, s.Score)
-				sc.SegRaw = append(sc.SegRaw, s.RawScore)
+				sc.SegRaw = append(sc.SegRaw, s.Raw)
 				sc.SegPreview = append(sc.SegPreview, s.Preview)
 			}
 			all = append(all, sc)
@@ -182,7 +259,7 @@ type ThresholdReport struct {
 // FitCutoffs picks the lowest raw cutoffs at which at most the given shares
 // of the calibration half score at or above each label, and reports the
 // shares on the check half.
-func FitCutoffs(calib, check []int, mixed, likely, ai float64) engine.Thresholds {
+func FitCutoffs(calib, check []float64, mixed, likely, ai float64) engine.Thresholds {
 	cutoff := func(allowed float64, floor int) int {
 		for t := floor; t <= 100; t++ {
 			if Share(calib, t) <= allowed {
@@ -203,13 +280,13 @@ func FitCutoffs(calib, check []int, mixed, likely, ai float64) engine.Thresholds
 }
 
 // Share is the fraction of scores at or above t.
-func Share(scores []int, t int) float64 {
+func Share(scores []float64, t int) float64 {
 	if len(scores) == 0 {
 		return 0
 	}
 	n := 0
 	for _, s := range scores {
-		if s >= t {
+		if s >= float64(t) {
 			n++
 		}
 	}
@@ -222,9 +299,9 @@ func Thresholds(ctx context.Context, e *engine.Engine, kind detect.Kind, dirs []
 		return nil, err
 	}
 	key := e.ThresholdKey(kind)
-	var calib, check, segCalib, segCheck, segDocRaw []int
+	var calib, check, segCalib, segCheck, segDocRaw []float64
 	for _, s := range all {
-		if split.Hash(s.ID)%2 == 0 {
+		if split.Calib(s.ID) {
 			calib = append(calib, s.Raw)
 			segCalib = append(segCalib, s.SegRaw...)
 			if len(s.SegRaw) > 0 {

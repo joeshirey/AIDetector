@@ -126,7 +126,7 @@ func (b *Budget) Cost(model, mode string, u Usage) float64 {
 	fresh := max(u.Input-u.CacheRead, 0)
 	c := (float64(fresh)*p.In + float64(u.CacheRead)*cacheIn + float64(u.Output+u.Thinking)*p.Out) / 1e6
 	if mode == ModeBatch {
-		c *= b.Prices.BatchMultiplier
+		c *= b.Prices.Batch(model)
 	}
 	return c
 }
@@ -140,6 +140,20 @@ func (b *Budget) Check(model string) error {
 	}
 	if c, ok := b.ModelCaps[model]; ok && b.ByModel[model] >= c {
 		return fmt.Errorf("%w for %s ($%.2f of its $%.2f cap)", ErrBudget, model, b.ByModel[model], c)
+	}
+	return nil
+}
+
+// CheckCost is Check for a known upcoming cost: it fails if spending est
+// more would cross the night's total or the model's cap.
+func (b *Budget) CheckCost(model string, est float64) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.Limit > 0 && b.Spent+est > b.Limit {
+		return fmt.Errorf("%w ($%.2f spent + $%.2f would pass $%.2f)", ErrBudget, b.Spent, est, b.Limit)
+	}
+	if c, ok := b.ModelCaps[model]; ok && b.ByModel[model]+est > c {
+		return fmt.Errorf("%w for %s ($%.2f + $%.2f would pass its $%.2f cap)", ErrBudget, model, b.ByModel[model], est, c)
 	}
 	return nil
 }

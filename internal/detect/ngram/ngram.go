@@ -83,6 +83,13 @@ type TrainOptions struct {
 	Epochs   int
 	L2       float64
 	Seed     uint64
+	// DenseL2 applies weight decay to every weight at every step (the
+	// regularized objective SGD is meant to minimize). Without it, decay
+	// only touches the terms in the current document, so rare terms are
+	// barely regularized.
+	DenseL2 bool
+	// Weights are per-document sample weights (nil means all 1).
+	Weights []float64
 }
 
 func DefaultTrainOptions() TrainOptions {
@@ -150,6 +157,10 @@ func Train(kind string, docs []string, isAI []bool, o TrainOptions) *Model {
 	for epoch := range o.Epochs {
 		rng.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
 		lr := 0.5 / math.Sqrt(float64(epoch+1))
+		decay := 1.0
+		if o.DenseL2 {
+			decay = 1 - lr*o.L2
+		}
 		for _, i := range order {
 			r := rows[i]
 			z := b
@@ -157,10 +168,25 @@ func Train(kind string, docs []string, isAI []bool, o TrainOptions) *Model {
 				z += w[j] * r.scale
 			}
 			g := 1/(1+math.Exp(-z)) - r.y
-			for _, j := range r.idx {
-				w[j] -= lr * (g*r.scale + o.L2*w[j])
+			if o.Weights != nil {
+				g *= o.Weights[i]
+			}
+			if o.DenseL2 {
+				for _, j := range r.idx {
+					w[j] -= lr * g * r.scale
+				}
+			} else {
+				for _, j := range r.idx {
+					w[j] -= lr * (g*r.scale + o.L2*w[j])
+				}
 			}
 			b -= lr * g
+		}
+		if o.DenseL2 { // one step's decay per document, applied in bulk per epoch
+			f := math.Pow(decay, float64(len(rows)))
+			for j := range w {
+				w[j] *= f
+			}
 		}
 	}
 

@@ -91,7 +91,7 @@ func (d Data) collect(keep func(rel, id string) bool, roots ...string) (map[stri
 				return nil
 			}
 			rel, _ := filepath.Rel(d.Root, p)
-			id := strings.TrimSuffix(strings.TrimSuffix(filepath.Base(p), ".txt"), ".json")
+			id := strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
 			if keep != nil && !keep(rel, id) {
 				return nil
 			}
@@ -234,10 +234,25 @@ func (d Data) Verify(m *Manifest, fixturesDir string, includeManual bool) ([]Ver
 		// New files appearing in a frozen location count too.
 		var now map[string]string
 		var err error
-		switch name {
-		case "test-split":
+		var pools []string
+		for _, p := range d.FreshPools() {
+			pools = append(pools, p)
+		}
+		switch {
+		case name == "test-split":
 			now, err = d.testSplitFiles()
-		case "frozen-sources":
+		case name == "fresh-pools":
+			now, err = d.collect(func(rel, id string) bool { return !FinalHoldout(id) }, pools...)
+		case name == "final-holdout":
+			now, err = d.collect(func(rel, id string) bool { return FinalHoldout(id) }, pools...)
+		case name == "fixtures" && fixturesDir != "":
+			now, err = d.collect(nil, fixturesDir)
+		case strings.HasPrefix(name, "gen-"):
+			gen := strings.TrimPrefix(name, "gen-")
+			now, err = d.collect(func(rel, id string) bool {
+				return strings.Contains(rel, string(filepath.Separator)+"ai"+string(filepath.Separator)+gen+string(filepath.Separator))
+			}, d.Path("corpus_frozen"))
+		case name == "frozen-sources":
 			now, err = d.collect(func(rel, id string) bool {
 				return !strings.Contains(rel, string(filepath.Separator)+"ai"+string(filepath.Separator))
 			}, d.Path("corpus_frozen"))
@@ -317,4 +332,30 @@ func (d Data) CheckGPTSplit() (*GPTSplit, error) {
 	}
 	sort.Strings(out.Leaks)
 	return out, nil
+}
+
+// RedrawHoldout recomputes the fresh-pools and final-holdout sets after
+// the holdout draw changed (FNV to SHA-256: the FNV holdout fell entirely
+// inside the calibration half). It runs once.
+func (d Data) RedrawHoldout(m *Manifest) (pools, holdout int, err error) {
+	if s := m.Sets["final-holdout"]; s != nil && strings.Contains(s.Note, "SHA-256") {
+		return 0, 0, fmt.Errorf("the final holdout was already redrawn")
+	}
+	var roots []string
+	for _, p := range d.FreshPools() {
+		roots = append(roots, p)
+	}
+	fp, err := d.collect(func(rel, id string) bool { return !FinalHoldout(id) }, roots...)
+	if err != nil {
+		return 0, 0, err
+	}
+	fh, err := d.collect(func(rel, id string) bool { return FinalHoldout(id) }, roots...)
+	if err != nil {
+		return 0, 0, err
+	}
+	m.Sets["fresh-pools"] = &FrozenSet{Sealed: true, Files: fp, Note: "human-only false-positive pools, minus the final holdout"}
+	m.Sets["final-holdout"] = &FrozenSet{Sealed: true, Manual: true, Files: fh,
+		Note: "10% of each fresh pool by SHA-256 (redrawn " + time.Now().Format("2006-01-02") + "); the loop never reads it. " +
+			"Production's shipped cutoffs were fit on all pool text, so this holdout is untouched only for candidates."}
+	return len(fp), len(fh), d.SaveManifest(m)
 }

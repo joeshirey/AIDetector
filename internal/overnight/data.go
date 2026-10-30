@@ -6,7 +6,8 @@
 package overnight
 
 import (
-	"hash/fnv"
+	"crypto/sha256"
+	"encoding/binary"
 	"path/filepath"
 	"strings"
 
@@ -88,9 +89,8 @@ var PoolGenre = map[string]string{
 // and calibration splits. The loop never reads these files; only Joe or a
 // manual run checks them.
 func FinalHoldout(id string) bool {
-	h := fnv.New32a()
-	h.Write([]byte("final-holdout:" + split.Base(id)))
-	return h.Sum32()%10 == 0
+	h := sha256.Sum256([]byte("final-holdout:" + split.Base(id)))
+	return binary.BigEndian.Uint32(h[:4])%10 == 0
 }
 
 // Trainable reports whether a training-corpus sample may be used for

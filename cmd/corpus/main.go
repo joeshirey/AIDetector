@@ -29,6 +29,7 @@ import (
 	"github.com/joeshirey/AIDetector/internal/detect"
 	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/fixtures"
+	"github.com/joeshirey/AIDetector/internal/split"
 )
 
 var kinds = []string{"pr", "blog", "memo", "essay"}
@@ -368,6 +369,9 @@ func promote(ctx context.Context, store *corpus.Store, kinds []string, n int, ha
 		}
 		promoted := 0
 		for _, p := range picked {
+			if split.Of(p.s.ID) == "test" {
+				continue // the test split is fixed; promoting into it would change it
+			}
 			if err := corpus.FetchDiff(ctx, &p.s); err != nil {
 				log.Printf("%s %s: %v (skipped)", k, p.s.ID, err)
 				continue

@@ -96,7 +96,7 @@ func (c *Collector) Collect(ctx context.Context, night string) (collected, carri
 			// Undo the reservation for work that didn't happen.
 			corpus.Spend.Record(corpus.Entry{Provider: "vertex-batch", Model: t.Job.Spec.Model, Mode: corpus.ModeBatch,
 				Night: t.Job.Night, Purpose: "batch correction", JobID: t.Job.Name, Cost: -t.Job.Estimate})
-			if !t.Job.Retried && corpus.Spend.Check(t.Job.Spec.Model) == nil {
+			if !t.Job.Retried && corpus.Spend.CheckCost(t.Job.Spec.Model, t.Job.Estimate) == nil {
 				fmt.Fprintf(c.Log, "batch %s failed (%s); retrying once\n", t.Job.Spec.Name(), t.Job.State)
 				nj, err := c.Batcher.Resubmit(ctx, t.Job, night)
 				if err != nil {
@@ -253,7 +253,7 @@ func SubmitPaid(ctx context.Context, b *corpus.Batcher, jobs *Jobs, spec corpus.
 		}
 		est += r.Cost
 	}
-	if err := corpus.Spend.Check(spec.Model); err != nil {
+	if err := corpus.Spend.CheckCost(spec.Model, est); err != nil {
 		return nil, err
 	}
 	job, err := b.Submit(ctx, spec, night, br, est)

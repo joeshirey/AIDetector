@@ -23,6 +23,25 @@ type AR struct {
 	Recall1 float64 `json:"recall1"`
 	Human   int     `json:"human"`
 	AI      int     `json:"ai"`
+	// S holds the per-sample scores behind the numbers, for the gate's
+	// paired bootstrap.
+	S []RankSample `json:"s,omitempty"`
+}
+
+// RankSample is one scored sample: Key identifies the file (so baseline
+// and candidate pair up), Group its source (resampling unit).
+type RankSample struct {
+	Key   string  `json:"k"`
+	Group string  `json:"g"`
+	AI    bool    `json:"ai"`
+	Raw   float64 `json:"r"`
+}
+
+// PoolDoc is one checking-half human document and its scores.
+type PoolDoc struct {
+	ID    string `json:"id"`
+	Score int    `json:"s"`
+	Segs  []int  `json:"segs,omitempty"`
 }
 
 // Metrics is everything the gate compares.
@@ -31,6 +50,7 @@ type Metrics struct {
 	PoolDoc  map[string][2]float64 `json:"pool_doc"` // pool -> share of human docs at 60+, 80+
 	PoolSeg  map[string]float64    `json:"pool_seg"` // pool -> share of human segments at 60+
 	PoolN    map[string][2]int     `json:"pool_n"`   // pool -> {documents, segments} scored
+	PoolDocs map[string][]PoolDoc  `json:"pool_docs"`
 	Fixtures fixtures.CheckResult  `json:"fixtures"`
 	Frozen   map[string]AR         `json:"frozen"` // "<gen>/<kind>" -> frozen set
 	Slices   map[string]AR         `json:"slices"` // held-out generator slices
@@ -40,7 +60,11 @@ func reportAR(r *eval.Report) AR {
 	if r == nil {
 		return AR{}
 	}
-	return AR{AUROC: r.AUROC, Recall1: r.TPRAtThresh, Human: r.Human, AI: r.AI}
+	ar := AR{AUROC: r.AUROC, Recall1: r.Recall1, Human: r.Human, AI: r.AI}
+	for _, s := range r.Samples {
+		ar.S = append(ar.S, RankSample{Key: s.Path, Group: split.Base(s.ID), AI: s.IsAI, Raw: s.Raw})
+	}
+	return ar
 }
 
 // frozenDirs returns corpus_frozen genre dirs for a detector kind.
@@ -64,8 +88,8 @@ func onlyGens(match func(gen string) bool) eval.Keep {
 			return true
 		}
 		parts := strings.Split(path, sep)
-		for i := range parts {
-			if parts[i] == "ai" && i+1 < len(parts) {
+		for i := len(parts) - 2; i >= 0; i-- { // the last "ai" component, so parent folders can't fool it
+			if parts[i] == "ai" {
 				return match(parts[i+1])
 			}
 		}
@@ -76,7 +100,7 @@ func onlyGens(match func(gen string) bool) eval.Keep {
 // Measure computes the gate metrics for an engine. It never reads the
 // final holdout.
 func Measure(ctx context.Context, e *engine.Engine, d Data, fixList *fixtures.List, fixDir string) (*Metrics, error) {
-	m := &Metrics{Test: map[string]AR{}, PoolDoc: map[string][2]float64{}, PoolSeg: map[string]float64{}, PoolN: map[string][2]int{},
+	m := &Metrics{Test: map[string]AR{}, PoolDoc: map[string][2]float64{}, PoolSeg: map[string]float64{}, PoolN: map[string][2]int{}, PoolDocs: map[string][]PoolDoc{},
 		Frozen: map[string]AR{}, Slices: map[string]AR{}}
 	for _, k := range []detect.Kind{detect.KindProse, detect.KindPR} {
 		r, err := eval.RunFiltered(ctx, e, d.TrainDirs(k), k, "test", nil)
@@ -112,18 +136,21 @@ func Measure(ctx context.Context, e *engine.Engine, d Data, fixList *fixtures.Li
 			}
 		}
 	}
-	noHoldout := func(path, id string) bool { return !FinalHoldout(id) }
+	// False positives are measured on the checking half only: the
+	// calibration half set the cutoffs, so it would be in-sample.
+	checkHalf := func(path, id string) bool { return !FinalHoldout(id) && !split.Calib(id) }
 	for name, dir := range d.FreshPools() {
 		k := detect.KindProse
 		if name == "fresh-pr" {
 			k = detect.KindPR
 		}
-		all, err := train.ScoreFiles(ctx, e, []string{dir}, k, noHoldout)
+		all, err := train.ScoreFiles(ctx, e, []string{dir}, k, checkHalf)
 		if err != nil {
 			return nil, err
 		}
 		var n60, n80, segN, seg60 int
 		for _, s := range all {
+			m.PoolDocs[name] = append(m.PoolDocs[name], PoolDoc{ID: s.ID, Score: s.Score, Segs: s.Segs})
 			if s.Score >= 60 {
 				n60++
 			}
@@ -165,66 +192,6 @@ func Measure(ctx context.Context, e *engine.Engine, d Data, fixList *fixtures.Li
 	return m, nil
 }
 
-// Check is one gate comparison.
-type Check struct {
-	Name         string  `json:"name"`
-	Before       float64 `json:"before"`
-	After        float64 `json:"after"`
-	Tolerance    float64 `json:"tolerance"`
-	HigherBetter bool    `json:"higher_better"`
-	Pass         bool    `json:"pass"`
-}
-
-// Gate compares a candidate with production. Every check must pass.
-func Gate(prod, cand *Metrics) ([]Check, bool) {
-	var checks []Check
-	add := func(name string, before, after, tol float64, higherBetter bool) {
-		pass := after >= before-tol
-		if !higherBetter {
-			pass = after <= before+tol
-		}
-		checks = append(checks, Check{Name: name, Before: before, After: after, Tolerance: tol, HigherBetter: higherBetter, Pass: pass})
-	}
-	for _, k := range sortedKeys(prod.Test) {
-		add("test AUROC "+k, prod.Test[k].AUROC, cand.Test[k].AUROC, 0.002, true)
-		add("test recall@1%FP "+k, prod.Test[k].Recall1, cand.Test[k].Recall1, 0.01, true)
-	}
-	// False-positive rates may not rise by more than one text's worth
-	// (Joe, 2026-10-28): a refit on the same data moves a document or a
-	// segment or two across a cutoff by chance.
-	oneOf := func(n int) float64 {
-		if n == 0 {
-			return 0
-		}
-		return 1/float64(n) + 1e-9
-	}
-	for _, p := range sortedKeys(prod.PoolDoc) {
-		tol := oneOf(prod.PoolN[p][0])
-		add("doc FPR 60+ "+p, prod.PoolDoc[p][0], cand.PoolDoc[p][0], tol, false)
-		add("doc FPR 80+ "+p, prod.PoolDoc[p][1], cand.PoolDoc[p][1], tol, false)
-	}
-	for _, p := range sortedKeys(prod.PoolSeg) {
-		add("segment FPR 60+ "+p, prod.PoolSeg[p], cand.PoolSeg[p], oneOf(prod.PoolN[p][1]), false)
-	}
-	fx := 0.0
-	if cand.Fixtures.Pass() {
-		fx = 1
-	}
-	checks = append(checks, Check{Name: "regression fixtures pass", Before: 1, After: fx, HigherBetter: true, Pass: cand.Fixtures.Pass()})
-	for _, k := range sortedKeys(prod.Frozen) {
-		add("frozen AUROC "+k, prod.Frozen[k].AUROC, cand.Frozen[k].AUROC, 0.01, true)
-		add("frozen recall@1%FP "+k, prod.Frozen[k].Recall1, cand.Frozen[k].Recall1, 0.01, true)
-	}
-	for _, k := range sortedKeys(prod.Slices) {
-		add("slice AUROC "+k, prod.Slices[k].AUROC, cand.Slices[k].AUROC, 0.005, true)
-	}
-	ok := true
-	for _, c := range checks {
-		ok = ok && c.Pass
-	}
-	return checks, ok
-}
-
 func sortedKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -234,14 +201,17 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-// RetrainCandidate fits prose and PR models into dir (excluding frozen and
-// test-split samples, which Fit's train split and the data layout already
-// guarantee) and calibrates cutoffs the same way as a manual refit:
-// document cutoffs on the original fresh pools, segment cutoffs on the
-// wider pool set, both excluding the final holdout.
-// With keepCutoffs, the candidate keeps production's label cutoffs (a
-// diagnostic: it separates model changes from cutoff changes).
-func RetrainCandidate(ctx context.Context, d Data, dir string, exclude eval.Keep, keepCutoffs bool) error {
+// FitOptions controls a candidate fit.
+type FitOptions struct {
+	Exclude     eval.Keep // training files to leave out
+	KeepCutoffs bool      // keep production's cutoffs (diagnostic)
+	Weighting   string    // "" (every file counts once) or "source" (see train.FitOptions)
+	DenseL2     bool      // experimental word-pattern regularization (see train.FitOptions)
+}
+
+// RetrainCandidate fits prose and PR models into dir from train-split
+// files and recalibrates the cutoffs with CalibrateCutoffs.
+func RetrainCandidate(ctx context.Context, d Data, dir string, o FitOptions) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -253,15 +223,51 @@ func RetrainCandidate(ctx context.Context, d Data, dir string, exclude eval.Keep
 	if err := os.WriteFile(filepath.Join(dir, "thresholds.json"), prodThresholds, 0o644); err != nil {
 		return err
 	}
-	trainable := func(path, id string) bool { return split.Of(id) == "train" && (exclude == nil || !exclude(path, id)) }
+	trainable := func(path, id string) bool {
+		return split.Of(id) == "train" && (o.Exclude == nil || !o.Exclude(path, id))
+	}
 	for _, k := range []detect.Kind{detect.KindProse, detect.KindPR} {
-		if _, err := train.Fit(ctx, k, d.TrainDirs(k), dir, false, trainable); err != nil {
+		if _, err := train.FitWith(ctx, k, d.TrainDirs(k), dir, train.FitOptions{Keep: trainable, Weighting: o.Weighting, DenseL2: o.DenseL2}); err != nil {
 			return fmt.Errorf("fit %s: %w", k, err)
 		}
 	}
-	if keepCutoffs {
+	if o.KeepCutoffs {
 		return nil
 	}
+	return CalibrateCutoffs(ctx, d, dir)
+}
+
+// ProductionBaseline copies the production models into dir and refits
+// their cutoffs with CalibrateCutoffs, so candidates are compared with
+// production under the same calibration data and procedure. (Production's
+// shipped cutoffs were fit on every pool text, including what is now the
+// checking half and the final holdout.)
+func ProductionBaseline(ctx context.Context, d Data, dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	names, err := engine.EmbeddedNames()
+	if err != nil {
+		return err
+	}
+	for _, n := range names {
+		b, err := engineFile(n)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, n), b, 0o644); err != nil {
+			return err
+		}
+	}
+	return CalibrateCutoffs(ctx, d, dir)
+}
+
+// CalibrateCutoffs refits the label cutoffs of the models in dir the same
+// way as a manual refit: document cutoffs on the original fresh pools,
+// segment cutoffs on the wider pool set. Only the calibration half of each
+// pool is used to fit (train.Thresholds splits with split.Calib), and the
+// final holdout is left out entirely.
+func CalibrateCutoffs(ctx context.Context, d Data, dir string) error {
 	cand, err := engine.FromDir(dir)
 	if err != nil {
 		return err

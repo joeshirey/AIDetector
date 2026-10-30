@@ -28,6 +28,7 @@ import (
 type Result struct {
 	Score      int             `json:"score" jsonschema:"0-100 on a scale shared by all kinds: 40+ inconclusive, 60+ likely AI, 80+ AI; at most ~5%, ~2%, and ~0.5% of held-out human text of the same kind reaches each"`
 	RawScore   int             `json:"raw_score" jsonschema:"the model's own 0-100 probability before mapping onto the shared scale"`
+	Raw        float64         `json:"-"` // RawScore before rounding, for calibration and ranking metrics
 	Label      string          `json:"label" jsonschema:"human, likely human, inconclusive, likely AI, AI, or too short to judge"`
 	Confidence string          `json:"confidence" jsonschema:"low, medium, or high; mostly driven by text length"`
 	Kind       detect.Kind     `json:"kind"`
@@ -54,11 +55,12 @@ type Reason struct {
 }
 
 type Segment struct {
-	Index    int    `json:"index"`
-	Score    int    `json:"score"`
-	RawScore int    `json:"raw_score" jsonschema:"the model's own probability for this chunk before calibration"`
-	Words    int    `json:"words"`
-	Preview  string `json:"preview"`
+	Index    int     `json:"index"`
+	Score    int     `json:"score"`
+	RawScore int     `json:"raw_score" jsonschema:"the model's own probability for this chunk before calibration"`
+	Raw      float64 `json:"-"`
+	Words    int     `json:"words"`
+	Preview  string  `json:"preview"`
 }
 
 type Engine struct {
@@ -172,6 +174,18 @@ func Default() *Engine {
 // EmbeddedFile returns one of the embedded production model files.
 func EmbeddedFile(name string) ([]byte, error) { return modelFS.ReadFile("models/" + name) }
 
+// EmbeddedNames lists the embedded production model files.
+func EmbeddedNames() ([]string, error) {
+	ents, err := modelFS.ReadDir("models")
+	var out []string
+	for _, e := range ents {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			out = append(out, e.Name())
+		}
+	}
+	return out, err
+}
+
 // FromDir loads candidate models from dir (prose.json, prose.ngram.json,
 // pr.json, pr.ngram.json, thresholds.json). Files missing from dir fall back
 // to the embedded ones, so a candidate can replace just one kind.
@@ -273,6 +287,18 @@ func (e *Engine) Analyze(ctx context.Context, in detect.Input) (Result, error) {
 	return res, nil
 }
 
+// Prepare returns the text the word-pattern model sees at scoring time:
+// sanitized, and for prose with code, tables, front matter, and label
+// lines removed. Training uses it too, so both see the same text.
+func Prepare(kind detect.Kind, s string) string {
+	clean, _ := text.Sanitize(s)
+	s = strings.TrimSpace(clean)
+	if kind == detect.KindProse {
+		s, _ = text.PrepareProse(s)
+	}
+	return s
+}
+
 func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 	clean, tamper := text.Sanitize(in.Text)
 	in.Text = strings.TrimSpace(clean)
@@ -291,7 +317,7 @@ func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 	}
 	if res.WordCount == 0 {
 		res.Cutoffs = e.Thresholds(in.Kind)
-		res.Score, res.RawScore, res.Label, res.Confidence = 50, 50, TooShort, "low"
+		res.Score, res.RawScore, res.Raw, res.Label, res.Confidence = 50, 50, 50, TooShort, "low"
 		res.Notes = append(res.Notes, "no prose to analyze")
 		return res, nil
 	}
@@ -317,7 +343,7 @@ func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 	conf := lengthConfidence(in.Kind, res.WordCount)
 	raw := e.score(in.Kind, signals, res.WordCount)
 	res.Cutoffs = e.Thresholds(in.Kind)
-	res.RawScore = int(math.Round(raw))
+	res.RawScore, res.Raw = int(math.Round(raw)), raw
 	res.Score = int(math.Round(e.scale(in.Kind, raw, signals)))
 	res.Label = Label(res.Score)
 	res.Confidence = confidenceLabel(conf, signals)
@@ -375,7 +401,7 @@ func (e *Engine) segments(ctx context.Context, in detect.Input, res *Result) err
 		if score >= 60 {
 			flagged++
 		}
-		res.Segments = append(res.Segments, Segment{Index: i, Score: score, RawScore: int(math.Round(raw)), Words: n, Preview: preview(w)})
+		res.Segments = append(res.Segments, Segment{Index: i, Score: score, RawScore: int(math.Round(raw)), Raw: raw, Words: n, Preview: preview(w)})
 	}
 	frac := float64(flagged) / float64(len(windows))
 	res.AIFraction = &frac

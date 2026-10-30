@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -17,9 +18,13 @@ type PriceTable struct {
 	// BatchMultiplier applies to Vertex batch prediction: 50% off the
 	// regional rate, and batch jobs run in regions that cost ~10% more
 	// than the global endpoint, so 0.55 of the global online price.
-	BatchMultiplier float64                 `json:"batch_multiplier"`
-	Models          map[string][]PricePoint `json:"models"`
-	Unknown         PricePoint              `json:"unknown"` // charged for models not listed: deliberately high
+	BatchMultiplier float64 `json:"batch_multiplier"`
+	// BatchByPrefix overrides BatchMultiplier by model-name prefix. Claude
+	// batches run regionally (us-east5, +10%: 0.55); Gemini batches run on
+	// the global endpoint (0.50).
+	BatchByPrefix map[string]float64      `json:"batch_by_prefix,omitempty"`
+	Models        map[string][]PricePoint `json:"models"`
+	Unknown       PricePoint              `json:"unknown"` // charged for models not listed: deliberately high
 }
 
 type PricePoint struct {
@@ -65,4 +70,14 @@ func (t *PriceTable) At(model string, night time.Time) PricePoint {
 		return t.Unknown
 	}
 	return *best
+}
+
+// Batch is the batch multiplier for a model.
+func (t *PriceTable) Batch(model string) float64 {
+	for p, m := range t.BatchByPrefix {
+		if strings.HasPrefix(model, p) {
+			return m
+		}
+	}
+	return t.BatchMultiplier
 }

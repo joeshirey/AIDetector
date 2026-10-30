@@ -307,7 +307,7 @@ type CheckRow struct {
 
 // Pass is the rule: at most one known-human fixture at 60+, and no
 // known-human segment at 80+.
-func (r CheckResult) Pass() bool { return r.KnownOver60 <= 1 && r.SegOver80 == 0 }
+func (r CheckResult) Pass() bool { return r.KnownOver60 <= 1 && r.SegOver80 == 0 && r.Missing == 0 }
 
 // Check scores every cached fixture (paste-style text) with score.
 func Check(l *List, dir string, score Scorer) (CheckResult, error) {

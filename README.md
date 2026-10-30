@@ -317,18 +317,27 @@ one machine overnight. It covers prose and PR descriptions. Each night it:
    one model at a time since both are served on this machine.
    Qwen is paused for now: its 2026-10-28 samples raised human false positives
    and were moved to `excluded/` (pass `-local` to opt back in)
-6. fits a candidate (`fit` plus `thresholds`, the same procedure as above,
-   with the final holdout left out) into `runs/overnight/<night>/round-N/`
-7. gates the candidate against production. It is accepted only if all of these hold:
-   - test-split AUROC no more than 0.002 lower, per kind
-   - recall at ≤1% false positives no more than 1 point lower
-   - no fresh pool's document false-positive rate at 60+ or 80+, or segment
-     false-positive rate at 60+, goes up by more than one text's worth
-     (one document or one segment; a same-data refit moves that much by chance)
-   - the fixtures pass
-   - the frozen Opus, Sonnet, Argon, and GPT sets each lose no more than 1
-     point of AUROC or recall
-   - the Gemini 3.8 Flash, Qwen, and Gemma slices lose no more than 0.005 AUROC
+6. fits a candidate (`fit` plus `thresholds`, the same procedure as above)
+   into `runs/overnight/<night>/round-N/`. Cutoffs are fit on the
+   calibration half of each pool only, with the final holdout left out.
+7. gates the candidate against a baseline: production's own models with
+   their cutoffs refit by that same procedure, so both are measured alike.
+   Each check compares the two on the same texts:
+   - test-split AUROC and recall at ≤1% false positives, per kind
+     (allowed margin: 0.002 AUROC, 1 point of recall)
+   - document false-positive rates at 60+ and 80+, and segment false
+     positives at 60+, on the checking half of every fresh pool (margin: 0)
+   - the frozen Opus, Sonnet, Argon, and GPT sets (margin: 1 point of AUROC
+     or recall)
+   - the Gemini 3.8 Flash, Qwen, and Gemma slices (margin: 0.005 AUROC)
+   - the fixtures, which must all pass with none missing
+
+   A check fails only when a paired bootstrap shows the candidate worse
+   than its margin, after a Holm correction across all checks. That keeps
+   the chance of failing a candidate that is no worse at about 5%; the
+   earlier "one extra text" rule failed neutral refits most of the time.
+   AUROC and recall use the unrounded model score, so there are no
+   integer-score ties to cliff on.
 8. measures (without changing anything) per-genre cutoffs and how much a
    genre classifier's mistakes would cost, and the label mix on the polished
    and humanized sets. On Sunday nights it also runs leave-one-family-out.
@@ -350,10 +359,17 @@ and writes `corpus_frozen/manifest.json`, a SHA-256 for every file in:
 - the fresh pools
 - the fixtures
 - the frozen sources
-- the final holdout (10% of each fresh pool, picked by a separate hash)
+- the final holdout (10% of each fresh pool, picked by SHA-256)
 
 The loop never reads the final holdout. Check it by hand with
-`corpus overnight verify -holdout`. Every night starts by verifying the other
+`corpus overnight verify -holdout`.
+
+The holdout and the calibration/checking halves were first drawn with
+FNV-1a, whose lowest bit is a parity of the input bytes. As a result the
+whole holdout sat inside the calibration half. On 2026-10-29 both moved to
+SHA-256 and the holdout was redrawn (`corpus overnight redraw-holdout`).
+Production's shipped cutoffs were fit on all pool text, so the holdout is
+untouched only for candidates. Every night starts by verifying the other
 sets, and it skips retraining if anything changed.
 
 New generations only ever go to train-split sources, and promotion only moves
@@ -410,7 +426,9 @@ Bulk generation goes through Vertex batch prediction:
 Every call is logged to `runs/ledger.jsonl` with input, output, thinking, and
 cache-read tokens and an estimated cost from the price table in
 `internal/corpus/prices.json`. The table is dated and can be overridden with
-`-prices`. Batch is priced at 0.55× online; thinking is billed as output.
+`-prices`. Claude batches run regionally and cost 0.55× the global online
+price (half off, plus 10% for the region); Gemini batches run on the global
+endpoint at 0.50×. Thinking is billed as output.
 
 `-budget-usd` is a hard cap for the night (40 for full nights; Joe's ceiling
 is 50), and `-model-caps` sets per-model caps on top. A run over $2 refuses
@@ -422,12 +440,13 @@ then compares billed Vertex AI cost with the ledger for nights 2 to 7 days
 back. If billing runs more than 15% over the ledger, it lowers that night's
 cap by the same ratio and flags it in the report.
 
-Price notes (checked 2026-10-28, from published rates rather than the console):
+Price notes:
 
-- Haiku 5.5 on Vertex is listed at $0.80/$4 per million tokens, eight times
-  the first-party $0.10/$0.50. The table uses the Vertex price.
-- The 0.55 batch multiplier is the 50% batch discount plus headroom for the
-  regional endpoint premium.
+- Haiku 5.5 on Vertex is $0.10/$0.50 per million tokens (checked
+  2026-10-29). The table first had $0.80/$4, a legacy Haiku rate, so ledger
+  entries for Haiku before 2026-10-29 are about 8× too high.
+- The paid shares above are shares of samples, not dollars. The loop works
+  out how many samples of each fit the night's budget at each model's price.
 
 Recommended Vertex quotas for a $40 night (project `dss-model-study`):
 
@@ -465,14 +484,33 @@ night resumes after the last finished step, and the spend so far is restored
 from the ledger. `corpus overnight status` lists batch jobs.
 
 The effort experiment runs once. For each paid model it generates the same
-50 sources at default and at low effort. A model uses low effort at night
-only if production's scores on the two sets match: a Kolmogorov-Smirnov
-statistic under the 5% critical value, and means within 3 points.
+50 sources at default and at low effort. `effort-report` compares the two
+distributions; `effort-paired` compares each source's two versions directly
+(mean paired difference with a 95% interval, and a Wilcoxon test), split by
+prose and PR. Ten PR pairs per model are too few to show the two efforts
+match, so treat low effort for PRs as unproven.
 
 ```sh
 bin/corpus overnight effort -plan
 bin/corpus overnight effort -budget-usd 10
 bin/corpus overnight collect && bin/corpus overnight effort-report   # writes runs/effort/result.json
+bin/corpus overnight effort-paired
+```
+
+### Diagnostics
+
+These cost nothing (no API calls):
+
+```sh
+# fit a candidate from the corpus as it is and gate it against the baseline
+bin/corpus overnight gate -name exp/try1
+#   -exclude-since T [-exclude-gen PREFIX]   leave out AI text written after T
+#   -exclude-human-since T                   leave out human files added after T
+#   -exclude-style persona,continue          leave out generations of these styles
+#   -weighting source                        weight each source and its mirrors equally
+#   -keep-cutoffs                            keep production's cutoffs (no refit)
+#   -candidate DIR                           gate an existing candidate instead
+bin/corpus overnight flips -name exp/try1    # pool texts that cross 60, by id
 ```
 
 ## Experimental: Binoculars scoring

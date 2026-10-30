@@ -10,6 +10,7 @@
 package eval
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"io/fs"
@@ -28,6 +29,7 @@ type Sample struct {
 	Path  string  `json:"path"`
 	IsAI  bool    `json:"is_ai"`
 	Score int     `json:"score"`
+	Raw   float64 `json:"raw"` // unrounded model probability (0-100), for ranking metrics
 	Words int     `json:"words"`
 	Kind  string  `json:"kind"`
 	Feats Signals `json:"signals"` // raw signals, for fitting weights later
@@ -42,7 +44,10 @@ type Report struct {
 	FPRAt50     float64 // human texts scoring >= 50
 	Threshold1  int     // lowest threshold with FPR <= 1%
 	TPRAtThresh float64
-	Samples     []Sample
+	// Recall1 is AI recall at <=1% false positives on the unrounded raw
+	// score, which (unlike the integer score) has no ties to cliff on.
+	Recall1 float64
+	Samples []Sample
 }
 
 // Run scores every sample in dirs. splitName is "train", "test", or "" for all.
@@ -100,7 +105,7 @@ func (r *Report) walk(ctx context.Context, e *engine.Engine, dir string, kind de
 					feats[s.Name] = s.Value
 				}
 			}
-			r.Samples = append(r.Samples, Sample{ID: id, Path: path, IsAI: label == "ai", Score: res.Score,
+			r.Samples = append(r.Samples, Sample{ID: id, Path: path, IsAI: label == "ai", Score: res.Score, Raw: res.Raw,
 				Words: res.WordCount, Kind: string(res.Kind), Feats: feats})
 			return nil
 		})
@@ -113,21 +118,23 @@ func (r *Report) walk(ctx context.Context, e *engine.Engine, dir string, kind de
 
 func (r *Report) compute() {
 	var human, ai []int
+	var humanRaw, aiRaw []float64
 	for _, s := range r.Samples {
 		if s.IsAI {
-			ai = append(ai, s.Score)
+			ai, aiRaw = append(ai, s.Score), append(aiRaw, s.Raw)
 		} else {
-			human = append(human, s.Score)
+			human, humanRaw = append(human, s.Score), append(humanRaw, s.Raw)
 		}
 	}
 	r.Human, r.AI = len(human), len(ai)
 	if r.Human == 0 || r.AI == 0 {
 		return
 	}
-	// AUROC: probability a random AI sample outscores a random human one.
+	// AUROC: probability a random AI sample outscores a random human one,
+	// on the unrounded raw score.
 	var wins float64
-	for _, a := range ai {
-		for _, h := range human {
+	for _, a := range aiRaw {
+		for _, h := range humanRaw {
 			switch {
 			case a > h:
 				wins++
@@ -148,6 +155,17 @@ func (r *Report) compute() {
 		r.Threshold1 = t
 	}
 	r.TPRAtThresh = frac(ai, r.Threshold1)
+	// Continuous version: the cutoff sits just above the (k+1)-th highest
+	// human raw score, where k is 1% of the humans (rounded down).
+	slices.SortFunc(humanRaw, func(a, b float64) int { return cmp.Compare(b, a) })
+	cut := humanRaw[min(len(humanRaw)*1/100, len(humanRaw)-1)]
+	n := 0
+	for _, a := range aiRaw {
+		if a > cut {
+			n++
+		}
+	}
+	r.Recall1 = float64(n) / float64(len(aiRaw))
 	slices.SortFunc(r.Samples, func(a, b Sample) int { return b.Score - a.Score })
 }
 

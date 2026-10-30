@@ -236,5 +236,8 @@ func (g *geminiGen) Generate(ctx context.Context, prompt string) (string, error)
 	if len(resp.Candidates) == 0 || resp.Candidates[0].FinishReason == genai.FinishReasonSafety {
 		return "", ErrRefused
 	}
+	if resp.Candidates[0].FinishReason == genai.FinishReasonMaxTokens {
+		return "", fmt.Errorf("%s: output truncated at the token limit", g.spec.Name())
+	}
 	return resp.Text(), nil
 }
