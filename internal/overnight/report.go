@@ -166,7 +166,7 @@ func (l *Loop) writeReport(ctx context.Context, rep *Report) (string, error) {
 	w("")
 	w("### Cells the bandit favors")
 	w("")
-	w("%s", topCells(l.bandit, 10))
+	w("%s", topCells(l.bandit, 10, st.Batches.Shares))
 	w("")
 
 	w("## Gate")
@@ -338,16 +338,24 @@ func confusion(c map[string]map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
-func topCells(b *Bandit, n int) string {
+// topCells lists the cells with the highest miss rates among those the
+// bandit can still pick: training styles and tonight's generators (when
+// known), so retired cells (edits, paused models) don't clutter it.
+func topCells(b *Bandit, n int, active map[string]float64) string {
 	type row struct {
 		key string
 		s   *Stat
 	}
 	var rows []row
 	for k, s := range b.Cells {
-		if s.N >= 3 {
-			rows = append(rows, row{k, s})
+		parts := strings.Split(k, "|")
+		if s.N < 3 || len(parts) != 4 || !slices.Contains(TrainStyles, Style(parts[2])) {
+			continue
 		}
+		if _, ok := active[parts[3]]; len(active) > 0 && !ok {
+			continue
+		}
+		rows = append(rows, row{k, s})
 	}
 	if len(rows) == 0 {
 		return "Not enough scored samples yet (cells need 3+)."
@@ -366,29 +374,48 @@ func recommendation(rep *Report) string {
 	if rep.FrozenBroken {
 		return "**Keep production.** A sealed frozen set changed, so tonight's gate isn't trustworthy. Check the checksum section."
 	}
+	// Passing the gate means "no worse"; promotion also needs a real gain:
+	// at least 1 point of test recall at 1% false positives in some kind, or
+	// at least half a point fewer human documents at 60+ summed over pools.
 	var best *Round
-	bestGain := -1.0
+	bestScore := 0.0
+	var bestRecall, bestFPR float64
 	for i := range st.Rounds {
 		r := &st.Rounds[i]
 		if !r.Accepted {
 			continue
 		}
-		gain := 0.0
+		recall, fpr := 0.0, 0.0
 		for _, c := range r.Checks {
-			if strings.HasPrefix(c.Name, "test AUROC") || strings.HasPrefix(c.Name, "frozen AUROC") {
-				gain += c.After - c.Before
+			switch {
+			case strings.HasPrefix(c.Name, "test recall@1%FP"):
+				recall = max(recall, c.After-c.Before)
+			case strings.HasPrefix(c.Name, "doc FPR 60+"):
+				fpr += c.Before - c.After
 			}
 		}
-		if gain > bestGain {
-			best, bestGain = r, gain
+		if recall < 0.01 && fpr < 0.005 {
+			continue
+		}
+		if score := recall + fpr; best == nil || score > bestScore {
+			best, bestScore, bestRecall, bestFPR = r, score, recall, fpr
 		}
 	}
 	if best == nil {
+		accepted := 0
+		for _, r := range st.Rounds {
+			if r.Accepted {
+				accepted++
+			}
+		}
+		if accepted > 0 {
+			return "**Keep production.** Tonight's candidate passed the gate (it's no worse) but didn't improve enough to be worth promoting: under 1 point of recall and under half a point fewer false positives. New data stays in the corpus."
+		}
 		return "**Keep production.** No candidate passed every gate check tonight. New data stays in the corpus for future rounds."
 	}
-	return fmt.Sprintf("**Consider promoting round %d** (`%s`): it passed every gate check, with a summed AUROC change of %+.4f across the test split and frozen sets. "+
-		"To promote, review the checks below, copy its model files into internal/engine/models/, run `go test ./...` and `aidetector fixtures`, and commit. The loop never does this itself.",
-		best.N, best.Dir, bestGain)
+	return fmt.Sprintf("**Consider promoting round %d** (`%s`): it passed every gate check, gained %+.1f points of test recall at 1%% false positives (best kind), and cut human documents at 60+ by %.1f points summed over the pools. "+
+		"Before promoting: one logged look at the final holdout (`corpus overnight holdout -name ...`), the fixtures comparison, and the texts it newly flags (`flips`). Then copy its model files into internal/engine/models/, run `go test ./...`, and commit. The loop never does this itself.",
+		best.N, best.Dir, bestRecall*100, bestFPR*100)
 }
 
 func monitoringChanges(l *Loop, rep *Report) string {
@@ -438,7 +465,7 @@ func trends(l *Loop, rep *Report) string {
 	hist := append(l.readHistory(), HistoryLine{Night: l.Night, Prod: mergeAR(rep.Prod.Frozen, rep.Prod.Slices)})
 	keys := []string{"gemini-4-argon/prose", "gemini-4-argon/pr", GemmaModel + "/prose", GemmaModel + "/pr"}
 	var out []string
-	out = append(out, "Production model on the frozen Argon set and the Gemma holdout (Argon is eval-only until approved; Gemma before it enters training):", "",
+	out = append(out, "Production model on the frozen Argon and Gemma sets (Argon is in training since 2026-10-29; Gemma is evaluation-only):", "",
 		"| Night | "+strings.Join(keys, " | ")+" |", "|---"+strings.Repeat("|---", len(keys))+"|")
 	start := max(0, len(hist)-14)
 	for _, h := range hist[start:] {
