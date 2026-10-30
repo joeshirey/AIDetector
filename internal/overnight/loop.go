@@ -689,7 +689,7 @@ func (l *Loop) retrain(ctx context.Context, n int) Round {
 	dir := filepath.Join(l.dir, fmt.Sprintf("round-%d", n))
 	r := Round{N: n, Dir: dir, Samples: countTraining(l.Cfg.Data)}
 	l.logf("round %d: fitting candidate on %d training files", n, r.Samples)
-	if err := RetrainCandidate(ctx, l.Cfg.Data, dir, FitOptions{Weighting: "source"}); err != nil {
+	if err := RetrainCandidate(ctx, l.Cfg.Data, dir, FitOptions{Weighting: "source+balance-generator"}); err != nil {
 		r.Err = err.Error()
 		return r
 	}

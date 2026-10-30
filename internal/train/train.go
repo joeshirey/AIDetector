@@ -44,7 +44,9 @@ type FitOptions struct {
 	// "family" does the same, but splits a source's AI weight equally across
 	// generator families first (claude, gemini, gpt, qwen, gemma), then
 	// across that family's files, so new mirrors from one family don't
-	// shrink the others. "" counts every file once.
+	// shrink the others. Either can add "+balance-family" or
+	// "+balance-generator" to rescale the AI side so each family or generator
+	// carries the same total weight. "" counts every file once.
 	Weighting string
 	// DenseL2 decays every word-pattern weight at every step (see
 	// ngram.TrainOptions). At the default strength it cut recall by about 1.5
@@ -150,7 +152,12 @@ func FitWith(ctx context.Context, kind detect.Kind, dirs []string, outDir string
 // directory plus the source id (split.Base strips style suffixes), so a
 // human text and all of its mirrors form one group.
 func sampleWeights(samples []eval.Sample, mode string) []float64 {
-	if mode != "source" && mode != "family" {
+	base := mode
+	balance := ""
+	if b, rest, ok := strings.Cut(mode, "+balance-"); ok {
+		base, balance = b, rest
+	}
+	if base != "source" && base != "family" {
 		return nil
 	}
 	sep := string(filepath.Separator)
@@ -183,14 +190,50 @@ func sampleWeights(samples []eval.Sample, mode string) []float64 {
 			continue
 		}
 		g := group(s)
-		if mode == "family" {
+		if base == "family" {
 			fams := families[g]
 			w[i] = 1 / float64(len(fams)) / float64(fams[family(s.Path)])
 		} else {
 			w[i] = 1 / float64(mirrors[g])
 		}
 	}
+	// "+balance-family" / "+balance-generator": rescale the AI side so each
+	// family (or generator) carries the same total weight, keeping the AI
+	// side's overall weight unchanged, so one heavily generated model can't
+	// dominate the fit.
+	if balance == "family" || balance == "generator" {
+		key := func(s eval.Sample) string {
+			if balance == "family" {
+				return family(s.Path)
+			}
+			return generator(s.Path)
+		}
+		sums := map[string]float64{}
+		total := 0.0
+		for i, s := range samples {
+			if s.IsAI {
+				sums[key(s)] += w[i]
+				total += w[i]
+			}
+		}
+		target := total / float64(len(sums))
+		for i, s := range samples {
+			if s.IsAI {
+				w[i] *= target / sums[key(s)]
+			}
+		}
+	}
 	return w
+}
+
+// generator is an AI file's generator directory, without an effort suffix.
+func generator(path string) string {
+	sep := string(filepath.Separator)
+	i := strings.LastIndex(path, sep+"ai"+sep)
+	if i < 0 {
+		return ""
+	}
+	return strings.SplitN(strings.SplitN(path[i+4:], sep, 2)[0], "@", 2)[0]
 }
 
 // family is the generator family of an AI file, from its generator
