@@ -515,6 +515,9 @@ func NewPlanner(d Data, b *Bandit, genres []Genre) (*Planner, error) {
 	return p, nil
 }
 
+// UnmatchedCount is how many train-split human sources have no AI version.
+func (p *Planner) UnmatchedCount() int { return len(p.unmatched) }
+
 func (p *Planner) cellsFor(gen string) []Cell {
 	var out []Cell
 	names := make([]string, 0, len(p.Sources))
@@ -604,10 +607,7 @@ func thinkingAllowance(s corpus.Spec) int {
 		}
 		return 4200
 	case strings.Contains(m, "argon"):
-		if low {
-			return 300
-		}
-		return 3000 // not measured yet; assume Flash-like
+		return 100 // measured: ~16 thinking tokens per call at either effort
 	case strings.Contains(m, "haiku"):
 		if low {
 			return 300

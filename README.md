@@ -508,7 +508,9 @@ The effort experiment runs once. For each paid model it generates the same
 distributions; `effort-paired` compares each source's two versions directly
 (mean paired difference with a 95% interval, and a Wilcoxon test), split by
 prose and PR. Ten PR pairs per model are too few to show the two efforts
-match, so treat low effort for PRs as unproven.
+match, so treat low effort for PRs as unproven. Since 2026-10-30 the loop
+uses default effort (what real users run, and what the frozen sets use);
+`-low-effort` applies the experiment's result instead.
 
 ```sh
 bin/corpus overnight effort -plan
@@ -532,6 +534,13 @@ bin/corpus overnight gate -name exp/try1
 #   -candidate DIR                           gate an existing candidate instead
 bin/corpus overnight flips -name exp/try1    # pool texts that cross 60, by id
 ```
+
+Source weighting caps each human text's AI side at a total weight of 1, so
+more AI versions of the same texts add little. To grow the corpus, harvest
+new human text and pair it: `corpus overnight pair` submits one plain AI
+version for every train-split human text that has none (by default Argon 2
+: Flash 1, `-pair-gens` to change, `-plan` to estimate). The next run
+collects and trains on them.
 
 ## Experimental: Binoculars scoring
 

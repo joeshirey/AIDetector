@@ -248,11 +248,6 @@ func HarvestEnron(ctx context.Context, n int, seen func(id string) bool) ([]Samp
 	var out []Sample
 	for offset := 0; len(out) < n && offset < 14000; offset += 100 {
 		u := "https://datasets-server.huggingface.co/rows?dataset=Yale-LILY/aeslc&config=default&split=train&length=100&offset=" + fmt.Sprint(offset)
-		req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return out, err
-		}
 		var page struct {
 			Rows []struct {
 				RowIdx int `json:"row_idx"`
@@ -263,8 +258,31 @@ func HarvestEnron(ctx context.Context, n int, seen func(id string) bool) ([]Samp
 			} `json:"rows"`
 			Error string `json:"error"`
 		}
-		err = json.NewDecoder(resp.Body).Decode(&page)
-		resp.Body.Close()
+		// The datasets server rate-limits with an HTML page; retry with backoff.
+		var err error
+		for attempt := range 6 {
+			if attempt > 0 {
+				select {
+				case <-time.After(time.Duration(attempt*attempt) * 5 * time.Second):
+				case <-ctx.Done():
+					return out, ctx.Err()
+				}
+			}
+			req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+			resp, rerr := http.DefaultClient.Do(req)
+			if rerr != nil {
+				err = rerr
+				continue
+			}
+			err = json.NewDecoder(resp.Body).Decode(&page)
+			resp.Body.Close()
+			if err == nil && resp.StatusCode == http.StatusOK {
+				break
+			}
+			if err == nil {
+				err = fmt.Errorf("aeslc: HTTP %d", resp.StatusCode)
+			}
+		}
 		if err != nil {
 			return out, err
 		}

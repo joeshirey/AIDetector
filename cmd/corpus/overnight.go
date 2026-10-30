@@ -33,6 +33,7 @@ const overnightUsage = `corpus overnight: the unattended improvement loop (see R
   flips          list fresh-pool texts that cross 60 between production and a candidate (-name DIR)
   holdout        one logged look at the final holdout: shipped vs a candidate (-name DIR)
   add-pool       reseal the fresh-pool checksums after adding a new pool directory
+  pair           submit one plain AI version for every human text that has none (-pair-gens; -plan to estimate)
   approve        record Joe's approval for full-budget nights
   verify         verify frozen-set checksums (-holdout includes the final holdout)
   status         list batch jobs
@@ -53,11 +54,13 @@ func runOvernight(ctx context.Context, args []string) error {
 	fixDir := fs.String("fixtures", "internal/engine/testdata/fixtures", "fixture cache (relative to -data)")
 	fixList := fs.String("fixture-list", "internal/engine/testdata/fixtures.json", "fixture list (relative to -data)")
 	budget := fs.Float64("budget-usd", 2, "hard spending cap for the night (USD)")
-	caps := fs.String("model-caps", "claude-haiku-5-5=18,gemini-3.8-flash=10,claude-sonnet-5-5=8,gemini-4-argon=8,claude-opus-5-5=10",
+	caps := fs.String("model-caps", "gemini-4-argon=20,claude-sonnet-5-5=10,gemini-3.8-flash=10,claude-haiku-5-5=5,claude-opus-5-5=10",
 		"per-model caps for the night, model=USD, comma-separated")
 	until := fs.String("until", "07:00", "run: local time to be finished by (next morning if earlier than now)")
 	maxNew := fs.Int("max-new", 2000, "run: max paid requests per generator per night (safety cap)")
 	maxTotal := fs.Int("max-total", 2000, "run: max paid requests per night, split among generators by sample share")
+	lowEffort := fs.Bool("low-effort", false, "run: use low effort where the effort experiment allowed it (default: default effort)")
+	pairGens := fs.String("pair-gens", "gemini:gemini-4-argon=2,gemini:gemini-3.8-flash=1", "pair: generators and relative weights")
 	paid := fs.String("paid", "auto", "run: paid generation: auto (pauses after 3 runs without a candidate worth promoting, resumes if a frozen set slips), on, or off")
 	argon := fs.Bool("argon-training", true, "run: let Argon generate training text (approved by Joe 2026-10-29; -argon-training=false makes it eval-only)")
 	gemma := fs.String("gemma", overnight.GemmaModel, "Gemma model name (its corpus directory); served by mlx_lm.server")
@@ -499,6 +502,73 @@ func runOvernight(ctx context.Context, args []string) error {
 		fmt.Printf("fresh-pools %d files, final-holdout %d files\n", p, h)
 		return nil
 
+	case "pair":
+		// One plain AI version for every train-split human text that has none,
+		// split among generators by weight, submitted as batch jobs.
+		type gw struct {
+			spec string
+			w    float64
+		}
+		var gws []gw
+		total := 0.0
+		for _, part := range strings.Split(*pairGens, ",") {
+			spec, ws, _ := strings.Cut(strings.TrimSpace(part), "=")
+			w := 1.0
+			if ws != "" {
+				if w, err = strconv.ParseFloat(ws, 64); err != nil {
+					return fmt.Errorf("-pair-gens %q: %w", part, err)
+				}
+			}
+			gws = append(gws, gw{spec, w})
+			total += w
+		}
+		bandit := overnight.LoadBandit(filepath.Join(abs(*runRoot), "bandit.json"), 7)
+		p, err := overnight.NewPlanner(d, bandit, overnight.Genres)
+		if err != nil {
+			return err
+		}
+		n := p.UnmatchedCount()
+		fmt.Printf("%d train-split human texts have no AI version\n", n)
+		if n == 0 {
+			return nil
+		}
+		bg, err := corpus.NewGenerators(ctx, "claude:claude-haiku-5-5")
+		if err != nil {
+			return err
+		}
+		br := &overnight.Briefer{Gen: bg[0], Dir: d.Path("briefs", "train")}
+		b, jobs, err := batchSetup(ctx, *bucket, jobsPath)
+		if err != nil {
+			return err
+		}
+		rng := rand.New(rand.NewPCG(13, 13))
+		left := n
+		for i, g := range gws {
+			k := int(float64(n) * g.w / total)
+			if i == len(gws)-1 {
+				k = left
+			}
+			left -= k
+			gens, err := corpus.NewGenerators(ctx, g.spec)
+			if err != nil {
+				return err
+			}
+			reqs, est := overnight.PlanPaid(ctx, p, br, gens[0], 1e9, k, rng)
+			if *plan {
+				fmt.Printf("%s: %d requests, estimated $%.2f\n", gens[0].Name(), len(reqs), est)
+				continue
+			}
+			t, err := overnight.SubmitPaid(ctx, b, jobs, gens[0].Spec(), night, "train", reqs)
+			if err != nil {
+				return fmt.Errorf("%s: %w", gens[0].Name(), err)
+			}
+			if t != nil {
+				fmt.Printf("%s: submitted %d requests, estimated $%.2f\n", gens[0].Name(), len(reqs), est)
+			}
+		}
+		fmt.Println(corpus.Spend)
+		return nil
+
 	case "redraw-holdout":
 		m, err := d.LoadManifest()
 		if err != nil {
@@ -563,8 +633,10 @@ func runOvernight(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		// Default effort unless asked: real users run default, the frozen
+		// sets are default, and low effort was never shown equivalent for PRs.
 		efforts := map[string]string{}
-		if b, err := os.ReadFile(d.Path("runs", "effort", "result.json")); err == nil {
+		if b, err := os.ReadFile(d.Path("runs", "effort", "result.json")); err == nil && *lowEffort {
 			var r struct{ Efforts map[string]string }
 			if json.Unmarshal(b, &r) == nil {
 				efforts = r.Efforts
