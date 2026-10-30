@@ -439,7 +439,10 @@ price (half off, plus 10% for the region); Gemini batches run on the global
 endpoint at 0.50×. Thinking is billed as output.
 
 `-budget-usd` is a hard cap for the night (40 for full nights; Joe's ceiling
-is 50), and `-model-caps` sets per-model caps on top. A run over $2 refuses
+is 50), and `-model-caps` sets per-model caps on top. `-max-total` (default
+3,000) caps the night's paid samples, split by the shares above; at current
+prices that's about $6 a night (most of it Argon and Sonnet), well under the budget. More than that would
+outweigh the human training text. A run over $2 refuses
 to start until `corpus overnight approve` has been run.
 
 If the Cloud Billing export to BigQuery is enabled, set

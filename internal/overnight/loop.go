@@ -49,7 +49,8 @@ type Config struct {
 	Until         time.Time          // hard stop; retrain, gate, and report must finish by then
 	BudgetUSD     float64            // hard cap for the night
 	ModelCaps     map[string]float64 // per-model caps (by model id)
-	MaxNew        int                // max paid requests per generator per night
+	MaxNew        int                // max paid requests per generator per night (a safety cap)
+	MaxTotal      int                // max paid requests per night, split by sample share (0 = budget only)
 	ArgonTraining bool               // Joe approved Argon for training (week 2+)
 	Efforts       map[string]string  // model -> "low" where the effort experiment allows it
 
@@ -498,7 +499,12 @@ func (l *Loop) submitPaid(ctx context.Context) error {
 		perReq[name] = corpus.Spend.Cost(s.Model, corpus.ModeBatch, EstimateUsage(s, strings.Repeat("word ", 700), 450))
 		costPerSample += shares[name] * perReq[name]
 	}
+	// More samples than the corpus can absorb would swamp the human side, so
+	// the night's total is capped as well as priced (Joe, 2026-10-30).
 	total := pot / max(costPerSample, 1e-9)
+	if l.Cfg.MaxTotal > 0 {
+		total = min(total, float64(l.Cfg.MaxTotal))
+	}
 	for _, name := range names {
 		gen := gens[name]
 		n := min(int(total*shares[name]), l.Cfg.MaxNew)
