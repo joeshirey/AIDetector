@@ -59,7 +59,7 @@ func runOvernight(ctx context.Context, args []string) error {
 	maxNew := fs.Int("max-new", 600, "run: max paid requests per generator per night")
 	argon := fs.Bool("argon-training", true, "run: let Argon generate training text (approved by Joe 2026-10-29; -argon-training=false makes it eval-only)")
 	gemma := fs.String("gemma", overnight.GemmaModel, "Gemma model name (its corpus directory); served by mlx_lm.server")
-	local := fs.String("local", "", "run: local generators, comma-separated (default: -gemma only; Qwen is paused, add lmstudio:qwen3.6-35b-a3b to use it)")
+	local := fs.String("local", "", "run: local generators, comma-separated, e.g. mlx:gemma-4-26b-a4b-it-8bit or lmstudio:qwen3.6-35b-a3b (default: none)")
 	workers := fs.Int("workers", 2, "local requests in flight per model")
 	quota := fs.Int("local-quota", 600, "run: max local samples per model per night")
 	mineN := fs.Int("mine-n", 30, "run: human false positives promoted per kind per night")
@@ -85,11 +85,10 @@ func runOvernight(ctx context.Context, args []string) error {
 	excludeStyle := fs.String("exclude-style", "", "gate: leave generations of these prompt styles (comma-separated: edit, continue, persona) out of the candidate")
 	fs.Parse(args[1:])
 	overnight.GemmaModel = *gemma
-	if *local == "" {
-		// Qwen is paused (2026-10-29): its 2026-10-28 samples raised human
-		// false positives and were moved to excluded/.
-		*local = "mlx:" + *gemma
-	}
+	// No local generators by default (2026-10-29): the released model
+	// already catches Qwen (AUROC 1.0) and Gemma (0.998-1.000, before any
+	// Gemma training text), and Qwen's samples added nothing when tested.
+	// Gemma stays a sealed evaluation set.
 
 	abs := func(p string) string {
 		if filepath.IsAbs(p) {

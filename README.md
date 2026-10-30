@@ -317,10 +317,11 @@ one machine overnight. It covers prose and PR descriptions. Each night it:
    polished set: they're mostly human text and raised false positives when
    trained on, so they live in `ai_edited/`, outside `ai/`. Every prompt passes the same
    "no human-sounding" check as `mirror`.
-5. generates locally with Qwen and Gemma (free) until it's time to retrain,
-   one model at a time since both are served on this machine.
-   Qwen is paused: re-tested with source weighting, its text was harmless but
-   added nothing (pass `-local` to opt back in)
+5. optionally generates locally (free) with `-local`, one model at a time
+   since local models share this machine's GPU. None by default: the
+   released model already catches Qwen and Gemma almost perfectly, and
+   Qwen's samples added nothing when tested. Gemma 4 26B is a sealed
+   evaluation set (pre-training AUROC 1.000 on prose, 0.998 on PRs)
 6. fits a candidate (`fit` plus `thresholds`, the same procedure as above)
    into `runs/overnight/<night>/round-N/`. Cutoffs are fit on the
    calibration half of each pool only, with the final holdout left out.
@@ -475,7 +476,7 @@ in the main checkout. The data stays in the main checkout:
 git worktree add ../AIDetector-overnight -b overnight/$(date +%F)
 cd ../AIDetector-overnight && go build -o bin/corpus ./cmd/corpus
 
-# Gemma runs in mlx_lm.server (the loop uses Qwen and Gemma in turn, never together)
+# only needed with -local mlx:gemma-4-26b-a4b-it-8bit (for example, frozen-gen)
 uv run --with mlx-lm mlx_lm.server --port 8081 --chat-template-args '{"enable_thinking":false}' \
   --model ~/.lmstudio/models/mlx-community/gemma-4-26b-a4b-it-8bit &
 
