@@ -319,8 +319,8 @@ one machine overnight. It covers prose and PR descriptions. Each night it:
    "no human-sounding" check as `mirror`.
 5. generates locally with Qwen and Gemma (free) until it's time to retrain,
    one model at a time since both are served on this machine.
-   Qwen is paused for now: its 2026-10-28 samples raised human false positives
-   and were moved to `excluded/` (pass `-local` to opt back in)
+   Qwen is paused: re-tested with source weighting, its text was harmless but
+   added nothing (pass `-local` to opt back in)
 6. fits a candidate (`fit` plus `thresholds`, the same procedure as above)
    into `runs/overnight/<night>/round-N/`. Cutoffs are fit on the
    calibration half of each pool only, with the final holdout left out.
@@ -401,7 +401,7 @@ source texts or diffs that appear on both sides of the split.
 | Haiku 5.5 | ~45% of paid samples |
 | Gemini 3.8 Flash | ~25% |
 | Sonnet 5.5 | ~15% |
-| Argon (`gemini-4-argon`) | ~15% from week 2, with approval (`-argon-training`); eval-only before that |
+| Argon (`gemini-4-argon`) | ~15% (in training since 2026-10-29; `-argon-training=false` makes it eval-only) |
 | Opus 5.5 | frozen set only |
 | Qwen3.6 35B A3B (LM Studio), Gemma 4 26B A4B (`mlx_lm.server`) | free, local |
 
@@ -409,8 +409,11 @@ Gemma 4 31B (8-bit) made 15.8 tokens/s alone but 13.2 next to Qwen, under
 the 15 tokens/s floor, so the loop uses the 26B A4B. LM Studio wouldn't
 register a model downloaded outside it, so Gemma runs in `mlx_lm.server`
 (the `mlx:` provider, `MLX_URL`, default port 8081) with its default sampling
-(temperature 1.0, top-p 0.95, top-k 64). Qwen keeps the LM Studio settings
-earlier mirrors used.
+(temperature 1.0, top-p 0.95, top-k 64) and thinking off. With thinking on it
+spent 2,000 to 3,000 hidden tokens per text and some answers ran out of room.
+Qwen is paused: its text didn't improve the model (the detector already
+catches Qwen almost perfectly), and its 2026-10-28 samples are in
+`excluded/`.
 
 The bandit shifts budget toward the generators whose text gets missed. No
 paid generator drops below 5% or rises above twice its base share.
@@ -473,7 +476,7 @@ git worktree add ../AIDetector-overnight -b overnight/$(date +%F)
 cd ../AIDetector-overnight && go build -o bin/corpus ./cmd/corpus
 
 # Gemma runs in mlx_lm.server (the loop uses Qwen and Gemma in turn, never together)
-uv run --with mlx-lm mlx_lm.server --port 8081 \
+uv run --with mlx-lm mlx_lm.server --port 8081 --chat-template-args '{"enable_thinking":false}' \
   --model ~/.lmstudio/models/mlx-community/gemma-4-26b-a4b-it-8bit &
 
 # dry run: about 20 requests per generator, one round, $2 cap

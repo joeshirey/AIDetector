@@ -57,7 +57,7 @@ func runOvernight(ctx context.Context, args []string) error {
 		"per-model caps for the night, model=USD, comma-separated")
 	until := fs.String("until", "07:00", "run: local time to be finished by (next morning if earlier than now)")
 	maxNew := fs.Int("max-new", 600, "run: max paid requests per generator per night")
-	argon := fs.Bool("argon-training", false, "run: let Argon generate training text (week 2+, only with Joe's approval)")
+	argon := fs.Bool("argon-training", true, "run: let Argon generate training text (approved by Joe 2026-10-29; -argon-training=false makes it eval-only)")
 	gemma := fs.String("gemma", overnight.GemmaModel, "Gemma model name (its corpus directory); served by mlx_lm.server")
 	local := fs.String("local", "", "run: local generators, comma-separated (default: -gemma only; Qwen is paused, add lmstudio:qwen3.6-35b-a3b to use it)")
 	workers := fs.Int("workers", 2, "local requests in flight per model")
