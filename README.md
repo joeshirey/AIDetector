@@ -527,7 +527,7 @@ bin/corpus overnight gate -name exp/try1
 #   -exclude-since T [-exclude-gen PREFIX]   leave out AI text written after T
 #   -exclude-human-since T                   leave out human files added after T
 #   -exclude-style persona,continue          leave out generations of these styles
-#   -weighting source                        weight each source and its mirrors equally
+#   -weighting source|family                 weight each source and its mirrors equally (family: split across generator families first)
 #   -keep-cutoffs                            keep production's cutoffs (no refit)
 #   -candidate DIR                           gate an existing candidate instead
 bin/corpus overnight flips -name exp/try1    # pool texts that cross 60, by id

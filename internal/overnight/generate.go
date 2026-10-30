@@ -488,6 +488,7 @@ type Planner struct {
 	// (e.g. freshly promoted pool texts). They're paired first, with a plain
 	// mirror, so the human side never goes in unpaired.
 	unmatched []Source
+	exhausted map[string]bool // cell keys with no untried sources left
 	rng       *rand.Rand
 	mu        sync.Mutex
 }
@@ -554,24 +555,40 @@ func (p *Planner) Next(gen string) (Cell, Source, bool) {
 	if len(cells) == 0 {
 		return Cell{}, Source{}, false
 	}
-	for range 50 {
-		c := p.Bandit.Pick(cells, p.Floor)
+	// Cells that have run out of untried sources are dropped (for this
+	// planner) so the bandit's favourites can't stall a whole night.
+	if p.exhausted == nil {
+		p.exhausted = map[string]bool{}
+	}
+	for {
+		var live []Cell
+		for _, c := range cells {
+			if !p.exhausted[c.Key()] {
+				live = append(live, c)
+			}
+		}
+		if len(live) == 0 {
+			return Cell{}, Source{}, false
+		}
+		c := p.Bandit.Pick(live, p.Floor)
 		srcs := p.Sources[c.Genre][c.Band]
-		for range 20 {
-			s := srcs[p.rng.IntN(len(srcs))]
+		// Try random sources first, then sweep the rest before giving up on
+		// the cell.
+		order := p.rng.Perm(len(srcs))
+		for _, k := range order {
+			s := srcs[k]
 			key := c.Gen + "|" + string(c.Style) + "|" + s.Sample.ID
 			if p.planned[key] {
 				continue
 			}
-			if _, err := os.Stat(p.Data.OutputPath(s.Genre, gen, s.Sample.ID, c.Style)); err == nil {
-				p.planned[key] = true // cached: never regenerate
-				continue
-			}
 			p.planned[key] = true
+			if _, err := os.Stat(p.Data.OutputPath(s.Genre, gen, s.Sample.ID, c.Style)); err == nil {
+				continue // cached: never regenerate
+			}
 			return c, s, true
 		}
+		p.exhausted[c.Key()] = true
 	}
-	return Cell{}, Source{}, false
 }
 
 // thinkingAllowance estimates hidden reasoning tokens per call, from the

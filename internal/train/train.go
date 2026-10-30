@@ -41,7 +41,10 @@ type FitOptions struct {
 	WithLM bool
 	// Weighting "source" gives each human source and its AI mirrors equal
 	// total weight: the human file counts 1 and each of its K mirrors 1/K.
-	// "" counts every file once.
+	// "family" does the same, but splits a source's AI weight equally across
+	// generator families first (claude, gemini, gpt, qwen, gemma), then
+	// across that family's files, so new mirrors from one family don't
+	// shrink the others. "" counts every file once.
 	Weighting string
 	// DenseL2 decays every word-pattern weight at every step (see
 	// ngram.TrainOptions). At the default strength it cut recall by about 1.5
@@ -147,7 +150,7 @@ func FitWith(ctx context.Context, kind detect.Kind, dirs []string, outDir string
 // directory plus the source id (split.Base strips style suffixes), so a
 // human text and all of its mirrors form one group.
 func sampleWeights(samples []eval.Sample, mode string) []float64 {
-	if mode != "source" {
+	if mode != "source" && mode != "family" {
 		return nil
 	}
 	sep := string(filepath.Separator)
@@ -161,20 +164,51 @@ func sampleWeights(samples []eval.Sample, mode string) []float64 {
 		}
 		return root + "|" + split.Base(s.ID)
 	}
-	mirrors := map[string]int{}
+	mirrors := map[string]int{}             // group -> AI files
+	families := map[string]map[string]int{} // group -> family -> AI files
 	for _, s := range samples {
 		if s.IsAI {
-			mirrors[group(s)]++
+			g := group(s)
+			mirrors[g]++
+			if families[g] == nil {
+				families[g] = map[string]int{}
+			}
+			families[g][family(s.Path)]++
 		}
 	}
 	w := make([]float64, len(samples))
 	for i, s := range samples {
 		w[i] = 1
-		if s.IsAI {
-			w[i] = 1 / float64(mirrors[group(s)])
+		if !s.IsAI {
+			continue
+		}
+		g := group(s)
+		if mode == "family" {
+			fams := families[g]
+			w[i] = 1 / float64(len(fams)) / float64(fams[family(s.Path)])
+		} else {
+			w[i] = 1 / float64(mirrors[g])
 		}
 	}
 	return w
+}
+
+// family is the generator family of an AI file, from its generator
+// directory (corpus/<kind>/ai/<generator>/...).
+func family(path string) string {
+	sep := string(filepath.Separator)
+	i := strings.LastIndex(path, sep+"ai"+sep)
+	if i < 0 {
+		return ""
+	}
+	gen := strings.SplitN(path[i+4:], sep, 2)[0]
+	gen = strings.SplitN(gen, "@", 2)[0]
+	for _, f := range []string{"claude", "gemini", "gpt", "qwen", "gemma"} {
+		if strings.HasPrefix(gen, f) {
+			return f
+		}
+	}
+	return gen
 }
 
 // Fold assigns a sample to one of n cross-validation folds by id, so a human
