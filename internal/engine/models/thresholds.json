@@ -1,11 +1,12 @@
 {
  "pr": {
-  "mixed": 54,
-  "likely_ai": 69,
-  "ai": 92,
-  "human_at_mixed": 0.050955414012738856,
-  "human_at_likely_ai": 0.012738853503184714,
-  "calibrated_on": 143
+  "mixed": 71,
+  "likely_ai": 81,
+  "ai": 90,
+  "human_at_mixed": 0.044897959183673466,
+  "human_at_likely_ai": 0.017346938775510204,
+  "human_at_ai": 0.00816326530612245,
+  "calibrated_on": 971
  },
  "prose": {
   "mixed": 26,
