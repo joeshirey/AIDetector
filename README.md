@@ -100,14 +100,20 @@ with Claude Code" in a PR description. They push the score to 97 or higher.
 
 ## How accurate is it?
 
-I measured this on 2026-10-29 on text that was held out from training.
+I measured this on 2026-10-30 on text that was held out from training.
 
 The test split is 20% of the corpus:
 
 | Kind | AUROC | AI caught with 1% of human text flagged |
 |---|---|---|
-| Prose (blogs, technical blogs, memos, essays) | 0.996 | 96% |
-| PR descriptions | 0.994 | 93% |
+| Prose (blogs, technical blogs, memos, essays) | 0.996 | 95% |
+| PR descriptions | 0.996 | 92% |
+
+Frozen sets of text from models held out of training measure newer models:
+recall at 1% false positives is 97% on prose and 95% on PRs for Gemini 4
+Argon (up from 94% and 93% before Argon text was added), 97 to 100% for
+Claude Opus and Sonnet 5.5, and 99% on prose for Gemma 4, which has never
+been trained on.
 
 For false positives I used fresh human text. None of it was in training and
 this half wasn't used to pick the cutoffs either. The PRs are from 105 repos
@@ -115,16 +121,16 @@ the training corpus had never touched:
 
 | Human texts | Labeled inconclusive | Labeled likely AI or AI | Labeled AI | Segments at 60+ |
 |---|---|---|---|---|
-| Learner essays (293) | 0.3% | 0% | 0% | 0.4% |
-| Blog posts (263) | 1.1% | 0.8% | 0% | 0.3% |
-| Technical blog posts (321)* | 0.9% | 0% | 0% | 0.3% |
-| Non-tech Medium, pre-2021 (656) | 3.8% | 0.8% | 0.3% | 0.8% |
-| PR descriptions (980) | 2.9% | 1.7% | 0.8% | |
-| Memos and emails (287) | 6.6% | 2.1% | 0.3% | |
+| Learner essays (293) | 0% | 0.3% | 0% | 0% |
+| Blog posts (263) | 0.8% | 0.8% | 0.4% | 0.2% |
+| Technical blog posts (321)* | 0% | 0.6% | 0% | 0.4% |
+| Non-tech Medium, pre-2021 (656) | 1.5% | 0.5% | 0% | 0.4% |
+| PR descriptions (980) | 3.1% | 1.8% | 0.6% | |
+| Memos and emails (287) | 4.2% | 3.1% | 0.3% | |
 
-A separate 10% of each pool (the final holdout) was checked once for this
-release: 3 of 398 human prose documents and 4 of 225 PRs scored 60+, against
-7 and 16 for the previous models.
+A separate 10% of each pool (the final holdout) was checked before each
+release: for this one, 1 of 398 human prose documents and 3 of 225 PRs
+scored 60+, against 3 and 4 for the previous release.
 
 \* Posts by Richard Seroter, Scott Hanselman, and technical Medium authors.
 Other posts by the same authors are in training, so this row is optimistic.
