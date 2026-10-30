@@ -31,6 +31,7 @@ const overnightUsage = `corpus overnight: the unattended improvement loop (see R
   run            run one night (until -until; -budget-usd over 2 needs 'approve')
   gate           measure production, fit a candidate into -run-root/manual, gate it (no spend)
   flips          list fresh-pool texts that cross 60 between production and a candidate (-name DIR)
+  holdout        one logged look at the final holdout: shipped vs a candidate (-name DIR)
   approve        record Joe's approval for full-budget nights
   verify         verify frozen-set checksums (-holdout includes the final holdout)
   status         list batch jobs
@@ -395,6 +396,81 @@ func runOvernight(ctx context.Context, args []string) error {
 		fmt.Println("|---|---|---:|---:|---|---:|---|---|")
 		for _, r := range rows {
 			fmt.Printf("| %s | %s | %d | %+.2f | [%+.2f, %+.2f] | %.3f | %v | %.0f/%.0f |\n", r.Model, r.Kind, r.N, r.MeanDiff, r.CILow, r.CIHigh, r.WilcoxonP, r.Equivalent, r.WordsDefault, r.WordsLow)
+		}
+		return nil
+
+	case "holdout":
+		dir := *outName
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(abs(*runRoot), dir)
+		}
+		cand, err := engine.FromDir(dir)
+		if err != nil {
+			return err
+		}
+		// Every look is logged: the holdout is only worth something while
+		// it's rarely used.
+		logf, err := os.OpenFile(filepath.Join(abs(*runRoot), "holdout-looks.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		b, _ := json.Marshal(map[string]string{"time": time.Now().Format(time.RFC3339), "candidate": dir})
+		logf.Write(append(b, '\n'))
+		logf.Close()
+		ship, err := overnight.ScoreHoldout(ctx, d, engine.Default())
+		if err != nil {
+			return err
+		}
+		cr, err := overnight.ScoreHoldout(ctx, d, cand)
+		if err != nil {
+			return err
+		}
+		fmt.Println("| Pool | Docs | Shipped 60+ | Candidate 60+ | Shipped 80+ | Candidate 80+ | Segments | Shipped seg 60+ | Candidate seg 60+ |")
+		fmt.Println("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+		for i := range ship {
+			a, c := ship[i], cr[i]
+			fmt.Printf("| %s | %d | %d | %d | %d | %d | %d | %d | %d |\n", a.Pool, a.Docs, a.Doc60, c.Doc60, a.Doc80, c.Doc80, a.Segs, a.Seg60, c.Seg60)
+		}
+		for i := range ship {
+			fmt.Printf("%s flagged: shipped %v; candidate %v\n", ship[i].Pool, ship[i].Flagged, cr[i].Flagged)
+		}
+		return nil
+
+	case "fixtures":
+		dir := *outName
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(abs(*runRoot), dir)
+		}
+		cand, err := engine.FromDir(dir)
+		if err != nil {
+			return err
+		}
+		fl, err := fixtures.Load(abs(*fixList))
+		if err != nil {
+			return err
+		}
+		a, err := overnight.FixtureRows(ctx, engine.Default(), fl, abs(*fixDir))
+		if err != nil {
+			return err
+		}
+		b, err := overnight.FixtureRows(ctx, cand, fl, abs(*fixDir))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("pass: shipped %v, candidate %v (missing %d)\n", a.Pass(), b.Pass(), b.Missing)
+		fmt.Println("| Fixture | Set | Shipped doc / max seg / label | Candidate doc / max seg / label |")
+		fmt.Println("|---|---|---|---|")
+		for i := range a.Rows {
+			x, y := a.Rows[i], b.Rows[i]
+			set := "known human"
+			if x.Monitoring {
+				set = "monitoring"
+			}
+			mark := ""
+			if x.Label != y.Label {
+				mark = " **changed**"
+			}
+			fmt.Printf("| %s | %s | %d / %d / %s | %d / %d / %s%s |\n", x.ID, set, x.Doc, x.MaxSeg, x.Label, y.Doc, y.MaxSeg, y.Label, mark)
 		}
 		return nil
 

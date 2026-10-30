@@ -15,6 +15,7 @@ import (
 	"github.com/joeshirey/AIDetector/internal/detect"
 	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/eval"
+	"github.com/joeshirey/AIDetector/internal/fixtures"
 	"github.com/joeshirey/AIDetector/internal/split"
 	"github.com/joeshirey/AIDetector/internal/train"
 )
@@ -408,4 +409,65 @@ func Flips(ctx context.Context, w io.Writer, d Data, prod, cand *engine.Engine, 
 		}
 	}
 	return nil
+}
+
+// HoldoutRow is one engine's human false-positive rates on one pool's
+// final holdout.
+type HoldoutRow struct {
+	Pool         string
+	Docs, Segs   int
+	Doc60, Doc80 int
+	Seg60        int
+	Flagged      []string // ids at 60+
+}
+
+// ScoreHoldout scores the final holdout of every fresh pool. It's for a
+// deliberate, logged look before a promotion decision; the loop never
+// calls it.
+func ScoreHoldout(ctx context.Context, d Data, e *engine.Engine) ([]HoldoutRow, error) {
+	var out []HoldoutRow
+	for _, name := range sortedKeys(d.FreshPools()) {
+		k := detect.KindProse
+		if name == "fresh-pr" {
+			k = detect.KindPR
+		}
+		all, err := train.ScoreFiles(ctx, e, []string{d.FreshPools()[name]}, k, func(path, id string) bool { return FinalHoldout(id) })
+		if err != nil {
+			return nil, err
+		}
+		r := HoldoutRow{Pool: name, Docs: len(all)}
+		for _, s := range all {
+			if s.Score >= 60 {
+				r.Doc60++
+				r.Flagged = append(r.Flagged, s.ID)
+			}
+			if s.Score >= 80 {
+				r.Doc80++
+			}
+			for _, v := range s.Segs {
+				r.Segs++
+				if v >= 60 {
+					r.Seg60++
+				}
+			}
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
+// FixtureRows scores the fixtures with an engine (for comparing label
+// changes, including the report-only monitoring set).
+func FixtureRows(ctx context.Context, e *engine.Engine, l *fixtures.List, dir string) (fixtures.CheckResult, error) {
+	return fixtures.Check(l, dir, func(text string) (int, int, string, error) {
+		r, err := e.Analyze(ctx, detect.Input{Text: text, Kind: detect.KindProse})
+		if err != nil {
+			return 0, 0, "", err
+		}
+		maxSeg := -1
+		for _, s := range r.Segments {
+			maxSeg = max(maxSeg, s.Score)
+		}
+		return r.Score, maxSeg, r.Label, nil
+	})
 }
