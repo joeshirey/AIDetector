@@ -32,6 +32,7 @@ const overnightUsage = `corpus overnight: the unattended improvement loop (see R
   gate           measure production, fit a candidate into -run-root/manual, gate it (no spend)
   flips          list fresh-pool texts that cross 60 between production and a candidate (-name DIR)
   holdout        one logged look at the final holdout: shipped vs a candidate (-name DIR)
+  add-pool       reseal the fresh-pool checksums after adding a new pool directory
   approve        record Joe's approval for full-budget nights
   verify         verify frozen-set checksums (-holdout includes the final holdout)
   status         list batch jobs
@@ -472,6 +473,29 @@ func runOvernight(ctx context.Context, args []string) error {
 			}
 			fmt.Printf("| %s | %s | %d / %d / %s | %d / %d / %s%s |\n", x.ID, set, x.Doc, x.MaxSeg, x.Label, y.Doc, y.MaxSeg, y.Label, mark)
 		}
+		return nil
+
+	case "add-pool":
+		// Existing pool files must verify before the sets are resealed with
+		// the new pool's files.
+		m, err := d.LoadManifest()
+		if err != nil {
+			return err
+		}
+		vs, err := d.Verify(m, abs(*fixDir), true)
+		if err != nil {
+			return err
+		}
+		for _, v := range vs {
+			if (v.Set == "fresh-pools" || v.Set == "final-holdout") && (v.Changed > 0 || v.Missing > 0) {
+				return fmt.Errorf("%s has changed or missing files; not resealing", v.Set)
+			}
+		}
+		p, h, err := d.ResealPools(m)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("fresh-pools %d files, final-holdout %d files\n", p, h)
 		return nil
 
 	case "redraw-holdout":

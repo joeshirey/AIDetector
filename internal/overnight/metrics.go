@@ -140,10 +140,7 @@ func Measure(ctx context.Context, e *engine.Engine, d Data, fixList *fixtures.Li
 	// calibration half set the cutoffs, so it would be in-sample.
 	checkHalf := func(path, id string) bool { return !FinalHoldout(id) && !split.Calib(id) }
 	for name, dir := range d.FreshPools() {
-		k := detect.KindProse
-		if name == "fresh-pr" {
-			k = detect.KindPR
-		}
+		k := PoolKind(name)
 		all, err := train.ScoreFiles(ctx, e, []string{dir}, k, checkHalf)
 		if err != nil {
 			return nil, err
@@ -276,7 +273,8 @@ func CalibrateCutoffs(ctx context.Context, d Data, dir string) error {
 	out := filepath.Join(dir, "thresholds.json")
 	o := train.DefaultThresholdOptions()
 	o.Only = "documents"
-	if _, err := train.Thresholds(ctx, cand, detect.KindPR, []string{d.Path("corpus_fresh", "pr", "pool")}, out, o, noHoldout); err != nil {
+	prPools := []string{d.Path("corpus_fresh", "pr", "pool"), d.Path("corpus_prpool", "pr", "pool")}
+	if _, err := train.Thresholds(ctx, cand, detect.KindPR, prPools, out, o, noHoldout); err != nil {
 		return err
 	}
 	docPools := []string{d.Path("corpus_fresh", "blog", "pool"), d.Path("corpus_fresh", "memo", "pool"), d.Path("corpus_fresh", "essay", "pool")}

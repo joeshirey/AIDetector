@@ -73,6 +73,7 @@ func (d Data) FreshPools() map[string]string {
 		"fresh-memo":     d.Path("corpus_fresh", "memo", "pool"),
 		"fresh-essay":    d.Path("corpus_fresh", "essay", "pool"),
 		"fresh-pr":       d.Path("corpus_fresh", "pr", "pool"),
+		"pr-pool":        d.Path("corpus_prpool", "pr", "pool"), // 99 more repos (2026-10-29), for PR cutoffs
 		"tech-pool":      d.Path("corpus_tech", "blog", "pool"),
 		"nontech-medium": d.Path("corpus_nontech", "blog", "pool"),
 	}
@@ -80,8 +81,16 @@ func (d Data) FreshPools() map[string]string {
 
 // PoolGenre maps a fresh pool to the genre whose cutoffs it measures.
 var PoolGenre = map[string]string{
-	"fresh-blog": "blog", "fresh-memo": "memo", "fresh-essay": "essay", "fresh-pr": "pr",
+	"fresh-blog": "blog", "fresh-memo": "memo", "fresh-essay": "essay", "fresh-pr": "pr", "pr-pool": "pr",
 	"tech-pool": "techblog", "nontech-medium": "blog",
+}
+
+// PoolKind is the detector kind a fresh pool is scored as.
+func PoolKind(name string) detect.Kind {
+	if PoolGenre[name] == "pr" {
+		return detect.KindPR
+	}
+	return detect.KindProse
 }
 
 // FinalHoldout reports whether a fresh-pool text belongs to the final

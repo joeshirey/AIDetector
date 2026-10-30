@@ -341,6 +341,13 @@ func (d Data) RedrawHoldout(m *Manifest) (pools, holdout int, err error) {
 	if s := m.Sets["final-holdout"]; s != nil && strings.Contains(s.Note, "SHA-256") {
 		return 0, 0, fmt.Errorf("the final holdout was already redrawn")
 	}
+	return d.ResealPools(m)
+}
+
+// ResealPools recomputes the fresh-pools and final-holdout sets from the
+// pools on disk: after the holdout draw changed, or when a new pool is
+// added (existing files must be unchanged; Verify first).
+func (d Data) ResealPools(m *Manifest) (pools, holdout int, err error) {
 	var roots []string
 	for _, p := range d.FreshPools() {
 		roots = append(roots, p)

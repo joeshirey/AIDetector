@@ -368,10 +368,7 @@ func Flips(ctx context.Context, w io.Writer, d Data, prod, cand *engine.Engine, 
 		if !ok {
 			return fmt.Errorf("unknown pool %q", name)
 		}
-		k := detect.KindProse
-		if name == "fresh-pr" {
-			k = detect.KindPR
-		}
+		k := PoolKind(name)
 		keep := func(path, id string) bool { return !FinalHoldout(id) }
 		a, err := train.ScoreFiles(ctx, prod, []string{dir}, k, keep)
 		if err != nil {
@@ -427,10 +424,7 @@ type HoldoutRow struct {
 func ScoreHoldout(ctx context.Context, d Data, e *engine.Engine) ([]HoldoutRow, error) {
 	var out []HoldoutRow
 	for _, name := range sortedKeys(d.FreshPools()) {
-		k := detect.KindProse
-		if name == "fresh-pr" {
-			k = detect.KindPR
-		}
+		k := PoolKind(name)
 		all, err := train.ScoreFiles(ctx, e, []string{d.FreshPools()[name]}, k, func(path, id string) bool { return FinalHoldout(id) })
 		if err != nil {
 			return nil, err
