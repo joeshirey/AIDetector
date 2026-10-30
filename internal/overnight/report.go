@@ -38,7 +38,8 @@ type Report struct {
 // HistoryLine is one night's trend data.
 type HistoryLine struct {
 	Night    string        `json:"night"`
-	Prod     map[string]AR `json:"prod"` // frozen sets and slices, production model
+	Method   string        `json:"method,omitempty"` // "v2": checking-half, continuous-score measurement (2026-10-29 on)
+	Prod     map[string]AR `json:"prod"`             // frozen sets and slices, production model
 	Accepted int           `json:"accepted"`
 	Spent    float64       `json:"spent"`
 }
@@ -296,12 +297,29 @@ func (l *Loop) writeReport(ctx context.Context, rep *Report) (string, error) {
 		return "", err
 	}
 	if rep.Prod != nil && !l.Cfg.DryRun {
-		h := HistoryLine{Night: l.Night, Prod: map[string]AR{}, Accepted: st.Accepted, Spent: spend.Total}
+		h := HistoryLine{Night: l.Night, Method: "v2", Prod: map[string]AR{}, Accepted: st.Accepted, Spent: spend.Total}
 		for k, v := range rep.Prod.Frozen {
 			h.Prod[k] = v
 		}
 		for k, v := range rep.Prod.Slices {
 			h.Prod[k] = v
+		}
+		for k := range h.Prod { // the history doesn't need per-sample scores
+			v := h.Prod[k]
+			v.S = nil
+			h.Prod[k] = v
+		}
+		// Count runs in a row without a candidate worth promoting (the
+		// paid-generation stopping rule).
+		streak := l.readStreak()
+		if promotable(rep) {
+			streak.Runs = 0
+		} else {
+			streak.Runs++
+		}
+		streak.Updated = time.Now().Format(time.RFC3339)
+		if sb, err := json.Marshal(streak); err == nil {
+			os.WriteFile(l.streakPath(), sb, 0o644)
 		}
 		hb, _ := json.Marshal(h)
 		if f, err := os.OpenFile(l.historyPath(), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644); err == nil {
@@ -367,6 +385,12 @@ func topCells(b *Bandit, n int, active map[string]float64) string {
 		out = append(out, fmt.Sprintf("| %s | %s | %d |", strings.ReplaceAll(r.key, "|", " · "), pct(r.s.Rate()), r.s.N))
 	}
 	return strings.Join(out, "\n")
+}
+
+// promotable reports whether a round is worth promoting under the rule in
+// recommendation.
+func promotable(rep *Report) bool {
+	return strings.HasPrefix(recommendation(rep), "**Consider promoting")
 }
 
 func recommendation(rep *Report) string {

@@ -57,7 +57,8 @@ func runOvernight(ctx context.Context, args []string) error {
 		"per-model caps for the night, model=USD, comma-separated")
 	until := fs.String("until", "07:00", "run: local time to be finished by (next morning if earlier than now)")
 	maxNew := fs.Int("max-new", 2000, "run: max paid requests per generator per night (safety cap)")
-	maxTotal := fs.Int("max-total", 3000, "run: max paid requests per night, split among generators by sample share")
+	maxTotal := fs.Int("max-total", 2000, "run: max paid requests per night, split among generators by sample share")
+	paid := fs.String("paid", "auto", "run: paid generation: auto (pauses after 3 runs without a candidate worth promoting, resumes if a frozen set slips), on, or off")
 	argon := fs.Bool("argon-training", true, "run: let Argon generate training text (approved by Joe 2026-10-29; -argon-training=false makes it eval-only)")
 	gemma := fs.String("gemma", overnight.GemmaModel, "Gemma model name (its corpus directory); served by mlx_lm.server")
 	local := fs.String("local", "", "run: local generators, comma-separated, e.g. mlx:gemma-4-26b-a4b-it-8bit or lmstudio:qwen3.6-35b-a3b (default: none)")
@@ -580,7 +581,7 @@ func runOvernight(ctx context.Context, args []string) error {
 		cfg := overnight.Config{
 			Data: d, RunRoot: abs(*runRoot), Ledger: abs(*ledger), ReportDir: abs(*reports), Bucket: *bucket,
 			FixturesDir: abs(*fixDir), FixtureList: abs(*fixList),
-			Until: stop, BudgetUSD: *budget, ModelCaps: modelCaps, MaxNew: *maxNew, MaxTotal: *maxTotal, ArgonTraining: *argon, Efforts: efforts,
+			Until: stop, BudgetUSD: *budget, ModelCaps: modelCaps, MaxNew: *maxNew, MaxTotal: *maxTotal, PaidMode: *paid, ArgonTraining: *argon, Efforts: efforts,
 			LocalModels: locals, LocalWorkers: *workers, LocalQuota: *quota,
 			MineN: *mineN, SourceCap: *sourceCap, Rounds: *rounds, Analyst: *analyst, LOFO: doLOFO, DryRun: dry,
 			Log: logw,

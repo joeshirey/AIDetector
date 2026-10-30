@@ -399,10 +399,10 @@ source texts or diffs that appear on both sides of the split.
 
 | Generator | Role |
 |---|---|
-| Haiku 5.5 | ~45% of paid samples |
-| Gemini 3.8 Flash | ~25% |
-| Sonnet 5.5 | ~15% |
-| Argon (`gemini-4-argon`) | ~15% (in training since 2026-10-29; `-argon-training=false` makes it eval-only) |
+| Argon (`gemini-4-argon`) | ~40% of paid samples (in training since 2026-10-29; `-argon-training=false` makes it eval-only) |
+| Sonnet 5.5 | ~25% |
+| Gemini 3.8 Flash | ~20% |
+| Haiku 5.5 | ~15% |
 | Opus 5.5 | frozen set only |
 | Qwen3.6 35B A3B (LM Studio), Gemma 4 26B A4B (`mlx_lm.server`) | free, local |
 
@@ -440,9 +440,18 @@ endpoint at 0.50×. Thinking is billed as output.
 
 `-budget-usd` is a hard cap for the night (40 for full nights; Joe's ceiling
 is 50), and `-model-caps` sets per-model caps on top. `-max-total` (default
-3,000) caps the night's paid samples, split by the shares above; at current
-prices that's about $6 a night (most of it Argon and Sonnet), well under the budget. More than that would
-outweigh the human training text. A run over $2 refuses
+2,000) caps the night's paid samples, split by the shares above; at current
+prices that's about $6 a night, mostly Argon and Sonnet. More would outweigh
+the human training text without helping: the shares were moved toward the
+models the detector catches least on 2026-10-30, after a run with more of
+the easy ones didn't improve anything.
+
+Paid generation stops itself when it stops helping. After 3 runs in a row
+without a candidate worth promoting, the loop goes to monitoring only: it
+still verifies the frozen sets, collects, measures, and reports, but submits
+nothing. It resumes on its own if any frozen set's recall falls more than a
+point below its best. `-paid on` or `-paid off` overrides; the count is in
+`runs/overnight/paid-streak.json`. A run over $2 refuses
 to start until `corpus overnight approve` has been run.
 
 If the Cloud Billing export to BigQuery is enabled, set

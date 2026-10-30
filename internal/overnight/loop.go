@@ -23,12 +23,19 @@ import (
 
 // Paid generators and their base shares of the paid sample budget. Argon
 // trains only from week 2, and only once Joe approves (ArgonTraining).
+// Shares moved toward the models the detector catches least (Joe,
+// 2026-10-30): Argon has the lowest frozen-set recall, and Haiku text is
+// already caught almost completely.
 var PaidBase = map[string]float64{
-	"claude:claude-haiku-5-5":  0.45,
-	"gemini:gemini-3.8-flash":  0.25,
-	"claude:claude-sonnet-5-5": 0.15,
-	"gemini:gemini-4-argon":    0.15,
+	"gemini:gemini-4-argon":    0.40,
+	"claude:claude-sonnet-5-5": 0.25,
+	"gemini:gemini-3.8-flash":  0.20,
+	"claude:claude-haiku-5-5":  0.15,
 }
+
+// StopAfter is how many runs in a row without a candidate worth promoting
+// switch paid generation off (monitoring only) when PaidMode is "auto".
+const StopAfter = 3
 
 const (
 	PaidFloor   = 0.05 // minimum share per paid generator
@@ -51,6 +58,7 @@ type Config struct {
 	ModelCaps     map[string]float64 // per-model caps (by model id)
 	MaxNew        int                // max paid requests per generator per night (a safety cap)
 	MaxTotal      int                // max paid requests per night, split by sample share (0 = budget only)
+	PaidMode      string             // "auto" (stop after StopAfter runs without a promotable candidate), "on", or "off"
 	ArgonTraining bool               // Joe approved Argon for training (week 2+)
 	Efforts       map[string]string  // model -> "low" where the effort experiment allows it
 
@@ -441,7 +449,62 @@ func (l *Loop) briefer(ctx context.Context) (*Briefer, error) {
 // submitPaid plans tonight's paid generation and submits one batch job per
 // generator. Results arrive by a later night (pipelined); the estimate is
 // reserved against tonight now.
+// paidStreak is the persisted count of runs in a row without a candidate
+// worth promoting.
+type paidStreak struct {
+	Runs    int    `json:"runs"`
+	Updated string `json:"updated"`
+}
+
+func (l *Loop) streakPath() string { return filepath.Join(l.Cfg.RunRoot, "paid-streak.json") }
+
+func (l *Loop) readStreak() paidStreak {
+	var s paidStreak
+	if b, err := os.ReadFile(l.streakPath()); err == nil {
+		json.Unmarshal(b, &s)
+	}
+	return s
+}
+
+// frozenSlip reports a frozen set whose baseline recall is more than a
+// point below its best since the current measurement method (history lines
+// marked v2), which means detection is slipping and paid data should resume.
+func (l *Loop) frozenSlip() string {
+	if l.prodM == nil {
+		return ""
+	}
+	best := map[string]float64{}
+	for _, h := range l.readHistory() {
+		if h.Method != "v2" {
+			continue
+		}
+		for k, v := range h.Prod {
+			best[k] = max(best[k], v.Recall1)
+		}
+	}
+	for _, k := range sortedKeys(l.prodM.Frozen) {
+		if b, ok := best[k]; ok && l.prodM.Frozen[k].Recall1 < b-0.01 {
+			return fmt.Sprintf("%s recall %.1f%% is below its best %.1f%%", k, l.prodM.Frozen[k].Recall1*100, b*100)
+		}
+	}
+	return ""
+}
+
 func (l *Loop) submitPaid(ctx context.Context) error {
+	switch mode := l.Cfg.PaidMode; {
+	case mode == "off":
+		l.note("paid generation is off (-paid off); monitoring only")
+		return nil
+	case mode == "auto" && !l.Cfg.DryRun:
+		if s := l.readStreak(); s.Runs >= StopAfter {
+			if slip := l.frozenSlip(); slip != "" {
+				l.note("paid generation resumed: %s", slip)
+			} else {
+				l.note("paid generation paused: %d runs in a row without a candidate worth promoting; monitoring only (-paid on overrides)", s.Runs)
+				return nil
+			}
+		}
+	}
 	base := map[string]float64{}
 	for spec, share := range PaidBase {
 		if strings.Contains(spec, "argon") && !l.Cfg.ArgonTraining {
