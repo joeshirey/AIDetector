@@ -374,31 +374,52 @@ func recommendation(rep *Report) string {
 	if rep.FrozenBroken {
 		return "**Keep production.** A sealed frozen set changed, so tonight's gate isn't trustworthy. Check the checksum section."
 	}
-	// Passing the gate means "no worse"; promotion also needs a real gain:
-	// at least 1 point of test recall at 1% false positives in some kind, or
-	// at least half a point fewer human documents at 60+ summed over pools.
+	// Passing the gate means "no worse"; promotion also needs a real gain,
+	// and no detection figure may fall by more than its margin even when the
+	// drop isn't statistically significant. A gain is at least 1 point of
+	// test recall at 1% false positives in some kind, or a net reduction in
+	// human documents at 60+ of at least 0.25% of all pool documents (at
+	// least 3), counted in documents so small pools don't dominate.
 	var best *Round
 	bestScore := 0.0
-	var bestRecall, bestFPR float64
+	var bestRecall, bestDocs float64
+	poolN := map[string]int{}
+	if rep.Prod != nil {
+		for p, n := range rep.Prod.PoolN {
+			poolN[p] = n[0]
+		}
+	}
+	totalDocs := 0
+	for _, n := range poolN {
+		totalDocs += n
+	}
+	needDocs := max(3, 0.0025*float64(totalDocs))
 	for i := range st.Rounds {
 		r := &st.Rounds[i]
 		if !r.Accepted {
 			continue
 		}
-		recall, fpr := 0.0, 0.0
+		recall, docs, dropped := 0.0, 0.0, false
 		for _, c := range r.Checks {
+			worse := c.Before - c.After
+			if !c.HigherBetter {
+				worse = c.After - c.Before
+			}
+			if c.HigherBetter && worse > c.Tolerance+1e-9 {
+				dropped = true
+			}
 			switch {
 			case strings.HasPrefix(c.Name, "test recall@1%FP"):
 				recall = max(recall, c.After-c.Before)
-			case strings.HasPrefix(c.Name, "doc FPR 60+"):
-				fpr += c.Before - c.After
+			case strings.HasPrefix(c.Name, "doc FPR 60+ "):
+				docs += (c.Before - c.After) * float64(poolN[strings.TrimPrefix(c.Name, "doc FPR 60+ ")])
 			}
 		}
-		if recall < 0.01 && fpr < 0.005 {
+		if dropped || (recall < 0.01 && docs < needDocs) {
 			continue
 		}
-		if score := recall + fpr; best == nil || score > bestScore {
-			best, bestScore, bestRecall, bestFPR = r, score, recall, fpr
+		if score := recall*100 + docs; best == nil || score > bestScore {
+			best, bestScore, bestRecall, bestDocs = r, score, recall, docs
 		}
 	}
 	if best == nil {
@@ -409,13 +430,13 @@ func recommendation(rep *Report) string {
 			}
 		}
 		if accepted > 0 {
-			return "**Keep production.** Tonight's candidate passed the gate (it's no worse) but didn't improve enough to be worth promoting: under 1 point of recall and under half a point fewer false positives. New data stays in the corpus."
+			return fmt.Sprintf("**Keep production.** Tonight's candidate passed the gate (no significant regression) but isn't worth promoting: it needs at least 1 point more test recall or %.0f fewer human documents at 60+, with no detection figure down by more than its margin. New data stays in the corpus.", needDocs)
 		}
 		return "**Keep production.** No candidate passed every gate check tonight. New data stays in the corpus for future rounds."
 	}
-	return fmt.Sprintf("**Consider promoting round %d** (`%s`): it passed every gate check, gained %+.1f points of test recall at 1%% false positives (best kind), and cut human documents at 60+ by %.1f points summed over the pools. "+
+	return fmt.Sprintf("**Consider promoting round %d** (`%s`): it passed every gate check, gained %+.1f points of test recall at 1%% false positives (best kind), and flags %.0f fewer human documents at 60+ across the pools. "+
 		"Before promoting: one logged look at the final holdout (`corpus overnight holdout -name ...`), the fixtures comparison, and the texts it newly flags (`flips`). Then copy its model files into internal/engine/models/, run `go test ./...`, and commit. The loop never does this itself.",
-		best.N, best.Dir, bestRecall*100, bestFPR*100)
+		best.N, best.Dir, bestRecall*100, bestDocs)
 }
 
 func monitoringChanges(l *Loop, rep *Report) string {
