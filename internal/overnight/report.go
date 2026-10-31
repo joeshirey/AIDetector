@@ -32,6 +32,7 @@ type Report struct {
 	Prod         *Metrics
 	Genres       *GenreReport
 	Polished     []LabelDist
+	Modern       []ModernRow
 	LOFO         []LOFORow
 }
 
@@ -251,6 +252,34 @@ func (l *Loop) writeReport(ctx context.Context, rep *Report) (string, error) {
 		for _, d := range rep.Polished {
 			c := func(l string) string { return pct(float64(d.Labels[l]) / float64(d.N)) }
 			w("| %s | %d | %s | %s | %s | %s | %s |", d.Set, d.N, c("human"), c("likely human"), c("inconclusive"), c("likely AI"), c("AI"))
+		}
+		w("")
+	}
+
+	if len(rep.Modern) > 0 {
+		w("## Modern human writing (post-2022, known human; report-only)")
+		w("")
+		w("Production model on writing published after ChatGPT by authors who don't use AI for prose. Never trained on; a rise here means modern human style is drifting toward false positives.")
+		w("")
+		w("| Pool | Docs | Inconclusive (40-59) | Likely AI or AI (60+) | AI (80+) | Segments at 60+ |")
+		w("|---|---:|---:|---:|---:|---:|")
+		for _, r := range rep.Modern {
+			seg := "-"
+			if r.Segs > 0 {
+				seg = pct(float64(r.Seg60) / float64(r.Segs))
+			}
+			w("| %s | %d | %s | %s | %s | %s |", r.Pool, r.Docs, pct(float64(r.Inconclusive)/float64(max(r.Docs, 1))),
+				pct(float64(r.LikelyAI)/float64(max(r.Docs, 1))), pct(float64(r.AI)/float64(max(r.Docs, 1))), seg)
+		}
+		for _, r := range rep.Modern {
+			if len(r.Flagged) > 0 {
+				var ids []string
+				for _, f := range r.Flagged {
+					ids = append(ids, fmt.Sprintf("%s (%d)", f.ID, f.Score))
+				}
+				w("")
+				w("%s flagged at 60+: %s", r.Pool, strings.Join(ids, ", "))
+			}
 		}
 		w("")
 	}

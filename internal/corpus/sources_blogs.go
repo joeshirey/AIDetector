@@ -231,3 +231,108 @@ func anyTechTag(tags []string) bool {
 	}
 	return tech
 }
+
+// Martin Fowler (martinfowler.com) states he writes his prose without AI,
+// which makes his post-2022 writing rare known-human text from after
+// ChatGPT. Only pages bylined by him alone are kept, and pages whose
+// acknowledgments mention AI assistance are skipped (and reported).
+
+var (
+	fowlerLinkRE   = regexp.MustCompile(`href\s*=\s*['"]?(/(?:bliki|articles)/[A-Za-z0-9/_.-]+\.html)`)
+	fowlerDateRE   = regexp.MustCompile(`(?s)<p class\s*=\s*['"]date['"]>\s*([^<]+?)\s*</p>`)
+	fowlerAuthorRE = regexp.MustCompile(`rel\s*=\s*['"]author['"][^>]*>([^<]+)<`)
+	fowlerTitleRE  = regexp.MustCompile(`(?s)<h1[^>]*>(.*?)</h1>`)
+	fowlerBodyRE   = regexp.MustCompile(`(?s)<div class\s*=\s*['"]paperBody['"]>(.*)</main>`)
+	fowlerAckRE    = regexp.MustCompile(`(?is)acknowledg(e)?ments?(.{0,1000})`)
+	fowlerAIRE     = regexp.MustCompile(`(?i)\b(AI|LLMs?|ChatGPT|Claude|Gemini|Copilot|GPT-?\d*|large language model|generative)\b`)
+)
+
+// FowlerPage is one parsed page, kept or not.
+type FowlerPage struct {
+	URL, Title, Date string
+	Authors          []string
+	Words            int
+	Skip             string // why it wasn't kept ("" if kept)
+}
+
+// HarvestFowler fetches the bliki entries and articles linked from
+// martinfowler.com/tags dated on or after since, one request a second.
+// It returns the kept samples and a log of every page considered.
+func HarvestFowler(ctx context.Context, since time.Time, n int, seen func(string) bool) ([]Sample, []FowlerPage, error) {
+	index, err := getBody(ctx, "https://martinfowler.com/tags/")
+	if err != nil {
+		return nil, nil, err
+	}
+	var urls []string
+	dup := map[string]bool{}
+	for _, m := range fowlerLinkRE.FindAllStringSubmatch(index, -1) {
+		if !dup[m[1]] {
+			dup[m[1]] = true
+			urls = append(urls, "https://martinfowler.com"+m[1])
+		}
+	}
+	var out []Sample
+	var log []FowlerPage
+	for _, u := range urls {
+		if len(out) >= n || ctx.Err() != nil {
+			break
+		}
+		slug := strings.TrimSuffix(strings.TrimPrefix(u, "https://martinfowler.com/"), ".html")
+		id := "fowler-" + strings.ReplaceAll(strings.ReplaceAll(slug, "/", "-"), "_", "-")
+		if seen(id) {
+			continue
+		}
+		select {
+		case <-time.After(time.Second):
+		case <-ctx.Done():
+			return out, log, ctx.Err()
+		}
+		page, err := getBody(ctx, u)
+		if err != nil {
+			log = append(log, FowlerPage{URL: u, Skip: err.Error()})
+			continue
+		}
+		p := FowlerPage{URL: u}
+		if m := fowlerTitleRE.FindStringSubmatch(page); m != nil {
+			p.Title = strings.TrimSpace(html.UnescapeString(anyTagRE.ReplaceAllString(m[1], "")))
+		}
+		if m := fowlerDateRE.FindStringSubmatch(page); m != nil {
+			p.Date = strings.TrimSpace(m[1])
+		}
+		for _, m := range fowlerAuthorRE.FindAllStringSubmatch(page, -1) {
+			p.Authors = append(p.Authors, strings.TrimSpace(html.UnescapeString(m[1])))
+		}
+		date, derr := time.Parse("2 January 2006", p.Date)
+		switch {
+		case derr != nil:
+			p.Skip = "no date"
+		case date.Before(since):
+			p.Skip = "before " + since.Format("2006-01-02")
+		case len(p.Authors) != 1 || p.Authors[0] != "Martin Fowler":
+			p.Skip = "not by Martin Fowler alone: " + strings.Join(p.Authors, ", ")
+		}
+		if p.Skip == "" {
+			if m := fowlerAckRE.FindStringSubmatch(page); m != nil && fowlerAIRE.MatchString(anyTagRE.ReplaceAllString(m[2], " ")) {
+				p.Skip = "acknowledgments mention AI"
+			}
+		}
+		body := page
+		if m := fowlerBodyRE.FindStringSubmatch(page); m != nil {
+			body = m[1]
+		} else if i := strings.Index(page, "<main"); i >= 0 {
+			body = page[i:]
+		}
+		text := htmlToText(body)
+		p.Words = len(strings.Fields(text))
+		if p.Skip == "" && (p.Words < 150 || p.Words > 4000) {
+			p.Skip = fmt.Sprintf("%d words", p.Words)
+		}
+		log = append(log, p)
+		if p.Skip != "" {
+			continue
+		}
+		out = append(out, Sample{ID: id, Kind: "blog", Source: "martinfowler.com", Text: text,
+			Context: map[string]string{"title": p.Title, "url": u, "date": date.Format("2006-01-02"), "words": fmt.Sprint(p.Words)}})
+	}
+	return out, log, nil
+}

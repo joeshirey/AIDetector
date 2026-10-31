@@ -85,6 +85,15 @@ var PoolGenre = map[string]string{
 	"tech-pool": "techblog", "nontech-medium": "blog",
 }
 
+// ModernPools are known-human texts written after ChatGPT's launch (so
+// never trained on), scored to see whether modern human writing, which has
+// absorbed some LLM phrasing, drifts toward false positives. Report-only.
+func (d Data) ModernPools() map[string]string {
+	return map[string]string{
+		"fowler": d.Path("corpus_modern", "blog", "pool"), // martinfowler.com, 2023 on, by Fowler alone
+	}
+}
+
 // PoolKind is the detector kind a fresh pool is scored as.
 func PoolKind(name string) detect.Kind {
 	if PoolGenre[name] == "pr" {

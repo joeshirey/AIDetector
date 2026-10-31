@@ -128,6 +128,15 @@ the training corpus had never touched:
 | PR descriptions (980) | 3.1% | 1.8% | 0.6% | |
 | Memos and emails (287) | 4.2% | 3.1% | 0.3% | |
 
+Human writing from after ChatGPT is a blind spot for a corpus that's all
+pre-2022, since people have picked up some LLM phrasing. As a check, 41 posts
+Martin Fowler wrote alone on martinfowler.com from 2023 to 2026 (he says he
+doesn't use AI for prose) are scored every night, report-only. None scores
+60+ and none of their 113 segments do; the highest is 45, on a post about
+agentic engineering. `corpus harvest -pool -source fowler -out corpus_modern`
+fetches them (cached, not redistributed), and `corpus overnight modern`
+scores them.
+
 A separate 10% of each pool (the final holdout) was checked before each
 release: for this one, 1 of 398 human prose documents and 3 of 225 PRs
 scored 60+, against 3 and 4 for the previous release.

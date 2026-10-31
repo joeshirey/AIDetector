@@ -34,6 +34,8 @@ const overnightUsage = `corpus overnight: the unattended improvement loop (see R
   holdout        one logged look at the final holdout: shipped vs a candidate (-name DIR)
   add-pool       reseal the fresh-pool checksums after adding a new pool directory
   pair           submit one plain AI version for every human text that has none (-pair-gens; -plan to estimate)
+  modern         score the modern (post-2022) known-human pools: shipped, and a candidate with -name DIR
+  seal-modern    record checksums for the modern known-human pools
   approve        record Joe's approval for full-budget nights
   verify         verify frozen-set checksums (-holdout includes the final holdout)
   status         list batch jobs
@@ -567,6 +569,55 @@ func runOvernight(ctx context.Context, args []string) error {
 			}
 		}
 		fmt.Println(corpus.Spend)
+		return nil
+
+	case "modern":
+		// Shipped production vs a candidate on the modern known-human pools.
+		engines := []struct {
+			name string
+			e    *engine.Engine
+		}{{"shipped", engine.Default()}}
+		if *outName != "manual" {
+			dir := *outName
+			if !filepath.IsAbs(dir) {
+				dir = filepath.Join(abs(*runRoot), dir)
+			}
+			cand, err := engine.FromDir(dir)
+			if err != nil {
+				return err
+			}
+			engines = append(engines, struct {
+				name string
+				e    *engine.Engine
+			}{"candidate", cand})
+		}
+		for _, en := range engines {
+			rows, err := overnight.MeasureModern(ctx, en.e, d)
+			if err != nil {
+				return err
+			}
+			for _, r := range rows {
+				fmt.Printf("%s %s: %d docs; inconclusive %d, 60+ %d, 80+ %d; segments at 60+ %d of %d\n",
+					en.name, r.Pool, r.Docs, r.Inconclusive, r.LikelyAI, r.AI, r.Seg60, r.Segs)
+				var top []string
+				for _, f := range r.Top {
+					top = append(top, fmt.Sprintf("%s %d", f.ID, f.Score))
+				}
+				fmt.Printf("    highest: %s\n", strings.Join(top, ", "))
+			}
+		}
+		return nil
+
+	case "seal-modern":
+		m, err := d.LoadManifest()
+		if err != nil {
+			return err
+		}
+		n, err := d.SealModern(m)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("sealed modern-human: %d files\n", n)
 		return nil
 
 	case "redraw-holdout":

@@ -252,6 +252,12 @@ func (d Data) Verify(m *Manifest, fixturesDir string, includeManual bool) ([]Ver
 			now, err = d.collect(func(rel, id string) bool {
 				return strings.Contains(rel, string(filepath.Separator)+"ai"+string(filepath.Separator)+gen+string(filepath.Separator))
 			}, d.Path("corpus_frozen"))
+		case name == "modern-human":
+			var roots []string
+			for _, p := range d.ModernPools() {
+				roots = append(roots, p)
+			}
+			now, err = d.collect(nil, roots...)
 		case name == "frozen-sources":
 			now, err = d.collect(func(rel, id string) bool {
 				return !strings.Contains(rel, string(filepath.Separator)+"ai"+string(filepath.Separator))
@@ -365,4 +371,19 @@ func (d Data) ResealPools(m *Manifest) (pools, holdout int, err error) {
 		Note: "10% of each fresh pool by SHA-256 (redrawn " + time.Now().Format("2006-01-02") + "); the loop never reads it. " +
 			"Production's shipped cutoffs were fit on all pool text, so this holdout is untouched only for candidates."}
 	return len(fp), len(fh), d.SaveManifest(m)
+}
+
+// SealModern records checksums for the modern known-human pools.
+func (d Data) SealModern(m *Manifest) (int, error) {
+	var roots []string
+	for _, p := range d.ModernPools() {
+		roots = append(roots, p)
+	}
+	files, err := d.collect(nil, roots...)
+	if err != nil {
+		return 0, err
+	}
+	m.Sets["modern-human"] = &FrozenSet{Sealed: true, Files: files,
+		Note: "known-human writing published after ChatGPT (report-only; never trained on)"}
+	return len(files), d.SaveManifest(m)
 }

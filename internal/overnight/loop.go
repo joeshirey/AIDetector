@@ -731,6 +731,9 @@ func (l *Loop) measure(ctx context.Context, rep *Report) error {
 	if rep.Polished, err = MeasurePolished(ctx, l.prod, l.Cfg.Data); err != nil {
 		return err
 	}
+	if rep.Modern, err = MeasureModern(ctx, l.prod, l.Cfg.Data); err != nil {
+		return err
+	}
 	if l.Cfg.LOFO && !l.Cfg.DryRun {
 		rep.LOFO, err = LeaveOneFamilyOut(ctx, l.Cfg.Data, l.prod, filepath.Join(l.dir, "lofo"))
 	}

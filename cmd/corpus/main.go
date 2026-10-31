@@ -14,6 +14,7 @@ package main
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -24,6 +25,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/joeshirey/AIDetector/internal/corpus"
 	"github.com/joeshirey/AIDetector/internal/detect"
@@ -196,8 +198,22 @@ func harvestBlogSource(ctx context.Context, store *corpus.Store, exclude []*corp
 			return ferr
 		}
 		samples, err = corpus.HarvestMediumNonTech(ctx, n, phase, skip, seen)
+	case "fowler":
+		// Post-2022 human writing is evaluation-only: never training data.
+		if !pool {
+			return fmt.Errorf("-source fowler needs -pool: post-2022 text is never trained on")
+		}
+		var pages []corpus.FowlerPage
+		samples, pages, err = corpus.HarvestFowler(ctx, time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC), n, seen)
+		if f, ferr := os.Create(filepath.Join(store.Root, "blog", "fowler-pages.jsonl")); ferr == nil {
+			for _, p := range pages {
+				b, _ := json.Marshal(p)
+				f.Write(append(b, '\n'))
+			}
+			f.Close()
+		}
 	default:
-		return fmt.Errorf("unknown source %q (want seroter, hanselman, medium-tech, or medium-nontech)", source)
+		return fmt.Errorf("unknown source %q (want seroter, hanselman, medium-tech, medium-nontech, or fowler)", source)
 	}
 	for _, s := range samples {
 		var serr error

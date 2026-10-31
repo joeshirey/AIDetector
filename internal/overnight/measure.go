@@ -465,3 +465,60 @@ func FixtureRows(ctx context.Context, e *engine.Engine, l *fixtures.List, dir st
 		return r.Score, maxSeg, r.Label, nil
 	})
 }
+
+// ModernRow is an engine's labels on one modern known-human pool.
+type ModernRow struct {
+	Pool                       string
+	Docs                       int
+	Inconclusive, LikelyAI, AI int // 40-59, 60+, 80+
+	Segs, Seg60                int
+	Flagged                    []ModernText // documents at 60+
+	Top                        []ModernText // highest-scoring documents
+}
+
+type ModernText struct {
+	ID    string
+	Score int
+}
+
+// MeasureModern scores the modern known-human pools (report-only).
+func MeasureModern(ctx context.Context, e *engine.Engine, d Data) ([]ModernRow, error) {
+	var out []ModernRow
+	pools := d.ModernPools()
+	for _, name := range sortedKeys(pools) {
+		if _, err := os.Stat(pools[name]); err != nil {
+			continue
+		}
+		all, err := train.ScoreFiles(ctx, e, []string{pools[name]}, detect.KindProse, nil)
+		if err != nil {
+			return nil, err
+		}
+		r := ModernRow{Pool: name, Docs: len(all)}
+		for _, s := range all {
+			switch {
+			case s.Score >= 80:
+				r.AI++
+				fallthrough
+			case s.Score >= 60:
+				r.LikelyAI++
+				r.Flagged = append(r.Flagged, ModernText{s.ID, s.Score})
+			case s.Score >= 40:
+				r.Inconclusive++
+			}
+			for _, v := range s.Segs {
+				r.Segs++
+				if v >= 60 {
+					r.Seg60++
+				}
+			}
+		}
+		sort.Slice(r.Flagged, func(i, j int) bool { return r.Flagged[i].Score > r.Flagged[j].Score })
+		for _, s := range all {
+			r.Top = append(r.Top, ModernText{s.ID, s.Score})
+		}
+		sort.Slice(r.Top, func(i, j int) bool { return r.Top[i].Score > r.Top[j].Score })
+		r.Top = r.Top[:min(5, len(r.Top))]
+		out = append(out, r)
+	}
+	return out, nil
+}
