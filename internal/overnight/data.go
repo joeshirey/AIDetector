@@ -134,6 +134,12 @@ func GeneratorFamily(gen string) string {
 		return "qwen"
 	case strings.HasPrefix(g, "gemma"):
 		return "gemma"
+	case strings.HasPrefix(g, "phi"):
+		return "phi"
+	case strings.HasPrefix(g, "mistral"):
+		return "mistral"
+	case strings.HasPrefix(g, "llama"):
+		return "llama"
 	}
 	return "other"
 }

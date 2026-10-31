@@ -537,9 +537,12 @@ func labelOf(a, b string) bool {
 
 func trends(l *Loop, rep *Report) string {
 	hist := append(l.readHistory(), HistoryLine{Night: l.Night, Prod: mergeAR(rep.Prod.Frozen, rep.Prod.Slices)})
-	keys := []string{"gemini-4-argon/prose", "gemini-4-argon/pr", GemmaModel + "/prose", GemmaModel + "/pr"}
+	keys := []string{"gemini-4-argon/prose", "gemini-4-argon/pr"}
+	for _, g := range EvalOnlyGenerators() {
+		keys = append(keys, g+"/prose", g+"/pr")
+	}
 	var out []string
-	out = append(out, "Production model on the frozen Argon and Gemma sets (Argon is in training since 2026-10-29; Gemma is evaluation-only):", "",
+	out = append(out, "Production model on the frozen Argon set and the evaluation-only open-weight sets (Gemma, Phi-4, Mistral Small 4, Llama 3.3; never trained on). Argon is in training since 2026-10-29:", "",
 		"| Night | "+strings.Join(keys, " | ")+" |", "|---"+strings.Repeat("|---", len(keys))+"|")
 	start := max(0, len(hist)-14)
 	for _, h := range hist[start:] {

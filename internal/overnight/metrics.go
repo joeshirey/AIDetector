@@ -122,15 +122,19 @@ func Measure(ctx context.Context, e *engine.Engine, d Data, fixList *fixtures.Li
 		if err != nil {
 			continue // not generated yet
 		}
-		for _, spec := range append(slices.Clone(FrozenGenerators), "lmstudio:"+GemmaModel) {
-			gen := strings.SplitN(spec, ":", 2)[1]
+		var gens []string
+		for _, spec := range FrozenGenerators {
+			gens = append(gens, strings.SplitN(spec, ":", 2)[1])
+		}
+		gens = append(gens, EvalOnlyGenerators()...)
+		for _, gen := range gens {
 			sub := fr.Subset(onlyGens(func(g string) bool { return g == gen }))
 			if sub.AI == 0 {
-				continue
+				continue // not generated yet
 			}
 			key := gen + "/" + string(k)
-			if strings.HasPrefix(gen, "gemma") {
-				m.Slices[key] = reportAR(sub)
+			if slices.Contains(EvalOnlyGenerators(), gen) {
+				m.Slices[key] = reportAR(sub) // never trained on: a slice check
 			} else {
 				m.Frozen[key] = reportAR(sub)
 			}
@@ -297,3 +301,10 @@ func engineFile(name string) ([]byte, error) { return engine.EmbeddedFile(name) 
 // under 15 tok/s alongside Qwen, so the loop uses the 26B A4B (8-bit MLX),
 // served by mlx_lm.server.
 var GemmaModel = "gemma-4-26b-a4b-it-8bit"
+
+// EvalOnlyGenerators are local open-weight models whose frozen sets measure
+// how well the detector catches families it has never trained on (by
+// corpus directory name). They're gated as slices and never trained on.
+func EvalOnlyGenerators() []string {
+	return []string{GemmaModel, "phi-4", "mistral-small-4", "llama-3.3-70b"}
+}
