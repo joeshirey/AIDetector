@@ -129,13 +129,16 @@ the training corpus had never touched:
 | Memos and emails (287) | 4.2% | 3.1% | 0.3% | |
 
 Human writing from after ChatGPT is a blind spot for a corpus that's all
-pre-2022, since people have picked up some LLM phrasing. As a check, 41 posts
-Martin Fowler wrote alone on martinfowler.com from 2023 to 2026 (he says he
-doesn't use AI for prose) are scored every night, report-only. None scores
-60+ and none of their 113 segments do; the highest is 45, on a post about
-agentic engineering. `corpus harvest -pool -source fowler -out corpus_modern`
-fetches them (cached, not redistributed), and `corpus overnight modern`
-scores them.
+pre-2022, since people have picked up some LLM phrasing. As a check, 161
+posts from 2023 to 2026 by five writers who say they don't use AI to write
+are scored every night, report-only: Martin Fowler (41), Graham Marlow (60),
+Kristen Hall-Geisler (52), Anne Winchell (5), and Mel Mitchell-Jackson (3).
+Four of them are clean: no post scores 60+. Marlow isn't: 5 of his 60 posts
+score 60+ and 2 score 80+. They're his shortest, most polished essays
+(200 to 400 words, very even sentence lengths), the kind of human writing
+this detector is weakest on. `corpus harvest -pool -source fowler` and
+`-source known-human` fetch them (cached, not redistributed), and
+`corpus overnight modern` scores them.
 
 A separate 10% of each pool (the final holdout) was checked before each
 release: for this one, 1 of 398 human prose documents and 3 of 225 PRs
@@ -176,15 +179,30 @@ A few other results:
 
 ## Limits
 
-A score isn't proof. About 2 in 100 human texts get "likely AI" or higher.
-I wouldn't base a grade, a disciplinary action, or a hiring call on it alone.
+A score isn't proof. It measures how much a text shares the statistical
+habits of LLM-generated prose, not who wrote it. About 2 in 100 human texts
+get "likely AI" or higher. I wouldn't base a grade, a disciplinary action, or
+a hiring call on it alone.
 
-It can't tell a light AI edit from a full AI rewrite (polished text tends to
-read as AI). Formal writing and templates (form letters, PR templates) also
-score higher than casual writing does.
+Some people have good reasons to run their writing through an LLM, and
+their text will often score as AI even though the ideas are theirs:
 
-It's trained on Claude, Gemini, GPT, and Qwen. Text from other model families
-(Llama, Grok, DeepSeek) may score lower than it should. English only. No code.
+- people writing in a second language who use an LLM to translate
+- people who use one for accessibility, for example because typing is hard
+- anyone who has an LLM edit or polish a draft. The detector can't tell a
+  light edit from a full rewrite; polished text tends to read as AI.
+
+Formal writing and templates (form letters, PR templates) also score higher
+than casual writing does, and so does human writing about AI itself.
+
+The human training text is all from before ChatGPT. People write a little
+differently now, having picked up some LLM phrasing. The only check on
+modern human writing so far is a few dozen posts by a handful of writers
+who say they don't use AI (none scored 60+), so treat it as a smoke test.
+
+It's trained on Claude, Gemini, GPT, and Qwen, and checked against Gemma.
+Text from other model families (Llama, Grok, DeepSeek) may score lower than
+it should. English only. No code.
 
 ## How it works
 

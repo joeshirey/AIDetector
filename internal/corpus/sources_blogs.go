@@ -336,3 +336,130 @@ func HarvestFowler(ctx context.Context, since time.Time, n int, seen func(string
 	}
 	return out, log, nil
 }
+
+// KnownHumanSite is a blog whose author publicly states they don't use AI
+// to write. Their post-2022 writing is evaluation-only known-human text.
+type KnownHumanSite struct {
+	Key    string // pool name and id prefix
+	Format string // "wordpress", "atom", or "rss"
+	URL    string // site root (wordpress) or feed URL
+	Policy string // where the author states it, checked 2026-10-31
+}
+
+// KnownHumanSites besides martinfowler.com (see HarvestFowler).
+var KnownHumanSites = []KnownHumanSite{
+	{"marlow", "atom", "https://mgmarlow.com/feed.xml", "https://mgmarlow.com/ai-policy/ (\"I do not use AI for writing or editing prose.\")"},
+	{"winchell", "wordpress", "https://annewinchell.com", "https://annewinchell.com/ai-policy/ (\"I do not use generative AI for writing.\")"},
+	{"hallgeisler", "wordpress", "https://kristenhallgeisler.com", "https://kristenhallgeisler.com/ai-policy/ (\"I do not use ... AI/LLMs in my work at any stage\")"},
+	{"mitchelljackson", "rss", "https://www.melmitchelljackson.com/blog?format=rss", "https://www.melmitchelljackson.com/ai-policy (\"I don't use AI chatbot tools at all in my work.\")"},
+}
+
+var (
+	feedEntryRE   = regexp.MustCompile(`(?s)<(entry|item)\b[^>]*>(.*?)</(entry|item)>`)
+	feedTitleRE   = regexp.MustCompile(`(?s)<title[^>]*>(.*?)</title>`)
+	feedLinkRE    = regexp.MustCompile(`<link[^>]*href="([^"]+)"|<link>([^<]+)</link>`)
+	feedDateRE    = regexp.MustCompile(`<(published|updated|pubDate)>([^<]+)</`)
+	feedContentRE = regexp.MustCompile(`(?s)<(content|content:encoded|description)\b[^>]*>(.*?)</(content|content:encoded|description)>`)
+	cdataRE       = regexp.MustCompile(`(?s)^\s*<!\[CDATA\[(.*)\]\]>\s*$`)
+)
+
+func unfeed(s string) string {
+	if m := cdataRE.FindStringSubmatch(s); m != nil {
+		return m[1]
+	}
+	return html.UnescapeString(s) // escaped HTML in Atom/RSS
+}
+
+func parseFeedDate(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	for _, layout := range []string{time.RFC3339, time.RFC1123Z, time.RFC1123, "Mon, 2 Jan 2006 15:04:05 -0700"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unparsed date %q", s)
+}
+
+// HarvestKnownHuman fetches a known-human site's posts dated on or after
+// since, 150 to 4,000 words of prose each (quotes and code dropped).
+func HarvestKnownHuman(ctx context.Context, site KnownHumanSite, since time.Time, seen func(string) bool) ([]Sample, error) {
+	type post struct {
+		link, title, body string
+		date              time.Time
+	}
+	var posts []post
+	switch site.Format {
+	case "wordpress":
+		for page := 1; page <= 20; page++ {
+			u := fmt.Sprintf("%s/wp-json/wp/v2/posts?after=%s&per_page=100&page=%d&_fields=date,link,title,content",
+				site.URL, since.Format("2006-01-02T15:04:05"), page)
+			body, err := getBody(ctx, u)
+			if err != nil {
+				if page > 1 {
+					break // past the last page
+				}
+				return nil, err
+			}
+			var ps []struct {
+				Date    string                    `json:"date"`
+				Link    string                    `json:"link"`
+				Title   struct{ Rendered string } `json:"title"`
+				Content struct{ Rendered string } `json:"content"`
+			}
+			if err := json.Unmarshal([]byte(body), &ps); err != nil {
+				return nil, err
+			}
+			for _, p := range ps {
+				d, _ := time.Parse("2006-01-02T15:04:05", p.Date)
+				posts = append(posts, post{p.Link, html.UnescapeString(p.Title.Rendered), p.Content.Rendered, d})
+			}
+			if len(ps) < 100 {
+				break
+			}
+		}
+	case "atom", "rss":
+		feed, err := getBody(ctx, site.URL)
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range feedEntryRE.FindAllStringSubmatch(feed, -1) {
+			e := m[2]
+			var p post
+			if t := feedTitleRE.FindStringSubmatch(e); t != nil {
+				p.title = strings.TrimSpace(anyTagRE.ReplaceAllString(unfeed(t[1]), ""))
+			}
+			if l := feedLinkRE.FindStringSubmatch(e); l != nil {
+				p.link = strings.TrimSpace(l[1] + l[2])
+			}
+			if d := feedDateRE.FindStringSubmatch(e); d != nil {
+				p.date, _ = parseFeedDate(d[2])
+			}
+			if c := feedContentRE.FindStringSubmatch(e); c != nil {
+				p.body = unfeed(c[2])
+			}
+			posts = append(posts, p)
+		}
+	default:
+		return nil, fmt.Errorf("unknown format %q", site.Format)
+	}
+	var out []Sample
+	for _, p := range posts {
+		if p.date.IsZero() || p.date.Before(since) {
+			continue
+		}
+		slug := strings.Trim(p.link[strings.LastIndex(strings.TrimRight(p.link, "/"), "/")+1:], "/")
+		slug = strings.TrimSuffix(slug, ".html")
+		id := site.Key + "-" + regexp.MustCompile(`[^A-Za-z0-9-]+`).ReplaceAllString(slug, "-")
+		if seen(id) {
+			continue
+		}
+		text := htmlToText(p.body)
+		words := len(strings.Fields(text))
+		if words < 150 || words > 4000 {
+			continue
+		}
+		out = append(out, Sample{ID: id, Kind: site.Key, Source: site.URL, Text: text,
+			Context: map[string]string{"title": p.title, "url": p.link, "date": p.date.Format("2006-01-02"), "words": fmt.Sprint(words), "policy": site.Policy}})
+	}
+	return out, nil
+}

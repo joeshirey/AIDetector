@@ -212,8 +212,29 @@ func harvestBlogSource(ctx context.Context, store *corpus.Store, exclude []*corp
 			}
 			f.Close()
 		}
+	case "known-human":
+		// Blogs whose authors state they don't use AI to write; post-2022, so
+		// evaluation-only. Each author gets a pool: <out>/<key>/pool.
+		if !pool {
+			return fmt.Errorf("-source known-human needs -pool: post-2022 text is never trained on")
+		}
+		since := time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC)
+		for _, site := range corpus.KnownHumanSites {
+			got, herr := corpus.HarvestKnownHuman(ctx, site, since, func(id string) bool { return store.Has(site.Key, id) })
+			if herr != nil {
+				log.Printf("%s: %v", site.Key, herr)
+				continue
+			}
+			for _, sm := range got {
+				if serr := store.SavePool(sm); serr != nil {
+					return serr
+				}
+			}
+			log.Printf("%s: harvested %d", site.Key, len(got))
+		}
+		return nil
 	default:
-		return fmt.Errorf("unknown source %q (want seroter, hanselman, medium-tech, medium-nontech, or fowler)", source)
+		return fmt.Errorf("unknown source %q (want seroter, hanselman, medium-tech, medium-nontech, fowler, or known-human)", source)
 	}
 	for _, s := range samples {
 		var serr error

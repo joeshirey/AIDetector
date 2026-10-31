@@ -91,6 +91,11 @@ var PoolGenre = map[string]string{
 func (d Data) ModernPools() map[string]string {
 	return map[string]string{
 		"fowler": d.Path("corpus_modern", "blog", "pool"), // martinfowler.com, 2023 on, by Fowler alone
+		// Authors with stated no-AI policies (see corpus.KnownHumanSites).
+		"marlow":          d.Path("corpus_modern", "marlow", "pool"),
+		"winchell":        d.Path("corpus_modern", "winchell", "pool"),
+		"hallgeisler":     d.Path("corpus_modern", "hallgeisler", "pool"),
+		"mitchelljackson": d.Path("corpus_modern", "mitchelljackson", "pool"),
 	}
 }
 
