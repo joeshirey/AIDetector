@@ -306,5 +306,7 @@ var GemmaModel = "gemma-4-26b-a4b-it-8bit"
 // how well the detector catches families it has never trained on (by
 // corpus directory name). They're gated as slices and never trained on.
 func EvalOnlyGenerators() []string {
-	return []string{GemmaModel, "phi-4", "mistral-small-4", "llama-3.3-70b"}
+	// Llama 3.3 moved to training on 2026-11-01 (its frozen set showed a real
+	// gap); Llama 4 Scout stays out as the held-out check on that family.
+	return []string{GemmaModel, "phi-4", "mistral-small-4", "llama-4-scout"}
 }
