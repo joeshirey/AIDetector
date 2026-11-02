@@ -24,7 +24,11 @@ families; the two-model form is what makes Binoculars family-independent.
 Results are cached on disk by model pair and text hash, since fitting rescans
 the corpus many times.
 
-    uv run scorer/server.py --observer mlx-community/Qwen3-8B-Base-bf16 --performer mlx-community/Qwen3-8B-bf16
+    uv run scorer/server.py --observer ~/.cache/aidetector/models/Qwen3-8B-Base-8bit --performer mlx-community/Qwen3-8B-8bit
+
+(8-bit: about 17 GB for the pair. The bf16 pair is about 30 GB plus cache,
+which crowded other apps out of memory on a 128 GB Mac. The 8-bit base
+model is made locally with mlx_lm.convert -q --q-bits 8.)
 
 Then set AIDETECTOR_SCORER_URL=http://127.0.0.1:8765 for the Go tools.
 """
@@ -46,7 +50,11 @@ MIN_TOKENS = 16
 
 
 class Scorer:
-    def __init__(self, performer: str, observer: str | None, cache_path: str):
+    def __init__(self, performer: str, observer: str | None, cache_path: str, cache_limit_gb: float = 2.0):
+        # Cap MLX's GPU buffer cache: it grows with every new input shape and
+        # is pinned memory macOS can't swap, which starved other apps
+        # (2026-11-02). The models themselves are the bulk of the footprint.
+        mx.set_cache_limit(int(cache_limit_gb * (1 << 30)))
         self.model, self.tokenizer = load(performer)
         self.observer = load(observer)[0] if observer else None
         name = lambda p: os.path.basename(os.path.normpath(p))
@@ -93,6 +101,8 @@ class Scorer:
             var = mx.sum(ref * logp * logp, axis=-1) - mu * mu
             stats = mx.stack([mx.sum(tok_logp), mx.sum(mu), mx.sum(var)])
             mx.eval(stats)
+            del logp, ref, tok_logp, mu, var
+            mx.clear_cache()  # don't keep per-shape buffers pinned between texts
         sum_logp, sum_mu, sum_var = (float(x) for x in stats.tolist())
         log_ppl = -sum_logp / n
         x_ppl = -sum_mu / n
@@ -111,10 +121,11 @@ def main():
     ap.add_argument("--observer", help="optional base model sharing the performer's tokenizer")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--cache", default=os.path.expanduser("~/.cache/aidetector-scorer.sqlite"))
+    ap.add_argument("--cache-limit-gb", type=float, default=2.0, help="cap on MLX's GPU buffer cache (pinned memory)")
     args = ap.parse_args()
     os.makedirs(os.path.dirname(args.cache), exist_ok=True)
     expand = lambda p: os.path.expanduser(p) if p and p.startswith("~") else p
-    scorer = Scorer(expand(args.performer), expand(args.observer), args.cache)
+    scorer = Scorer(expand(args.performer), expand(args.observer), args.cache, args.cache_limit_gb)
     scorer.score("Warm up the model so the first real request isn't slow.")
 
     class Handler(BaseHTTPRequestHandler):
