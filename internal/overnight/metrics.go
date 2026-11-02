@@ -208,6 +208,10 @@ type FitOptions struct {
 	KeepCutoffs bool      // keep production's cutoffs (diagnostic)
 	Weighting   string    // "" (every file counts once) or "source" (see train.FitOptions)
 	DenseL2     bool      // experimental word-pattern regularization (see train.FitOptions)
+	// WithLM fits the token-probability models (<kind>.lm.json, used only when
+	// the local scorer is running; needs AIDETECTOR_SCORER_URL). The regular
+	// models are copied from production so the fallback stays production's.
+	WithLM bool
 }
 
 // RetrainCandidate fits prose and PR models into dir from train-split
@@ -224,11 +228,22 @@ func RetrainCandidate(ctx context.Context, d Data, dir string, o FitOptions) err
 	if err := os.WriteFile(filepath.Join(dir, "thresholds.json"), prodThresholds, 0o644); err != nil {
 		return err
 	}
+	if o.WithLM {
+		// Experiments only: the regular models come from production, but the
+		// fit rewrites the shared word-pattern file (<kind>.ngram.json) for
+		// the LM models. Shipping LM models would need the fallback to keep
+		// its own word-pattern file.
+		for _, n := range []string{"prose.json", "pr.json"} {
+			if b, err := engineFile(n); err == nil {
+				os.WriteFile(filepath.Join(dir, n), b, 0o644)
+			}
+		}
+	}
 	trainable := func(path, id string) bool {
 		return split.Of(id) == "train" && (o.Exclude == nil || !o.Exclude(path, id))
 	}
 	for _, k := range []detect.Kind{detect.KindProse, detect.KindPR} {
-		if _, err := train.FitWith(ctx, k, d.TrainDirs(k), dir, train.FitOptions{Keep: trainable, Weighting: o.Weighting, DenseL2: o.DenseL2}); err != nil {
+		if _, err := train.FitWith(ctx, k, d.TrainDirs(k), dir, train.FitOptions{Keep: trainable, Weighting: o.Weighting, DenseL2: o.DenseL2, WithLM: o.WithLM}); err != nil {
 			return fmt.Errorf("fit %s: %w", k, err)
 		}
 	}

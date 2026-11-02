@@ -83,6 +83,7 @@ func runOvernight(ctx context.Context, args []string) error {
 	excludeSince := fs.String("exclude-since", "", "gate: leave AI generations written after this time (RFC 3339) out of the candidate")
 	excludeGen := fs.String("exclude-gen", "", "gate: with -exclude-since, only generations from generator directories starting with this")
 	excludeHumanSince := fs.String("exclude-human-since", "", "gate: leave human training files added after this time (RFC 3339; e.g. promotions) out of the candidate")
+	withLM := fs.Bool("lm", false, "gate: fit token-probability (scorer) models too; needs AIDETECTOR_SCORER_URL")
 	subsample := fs.String("subsample", "", "gate: keep only a stable fraction of one generator's AI files, gen=fraction (e.g. llama-3.3-70b=0.5)")
 	excludeGenStyle := fs.String("exclude-gen-style", "", "gate: drop some styles of one generator, gen:style,style (e.g. llama-3.3-70b:persona,continue)")
 	candDir := fs.String("candidate", "", "gate: gate an existing candidate directory instead of fitting one")
@@ -395,7 +396,7 @@ func runOvernight(ctx context.Context, args []string) error {
 				dir = filepath.Join(abs(*runRoot), dir)
 			}
 		} else if err := overnight.RetrainCandidate(ctx, d, dir, overnight.FitOptions{Exclude: exclude, KeepCutoffs: *keepCutoffs,
-			Weighting: *weighting, DenseL2: *denseL2}); err != nil {
+			Weighting: *weighting, DenseL2: *denseL2, WithLM: *withLM}); err != nil {
 			return err
 		}
 		fmt.Printf("candidate fit in %s\n", time.Since(start).Round(time.Second))
