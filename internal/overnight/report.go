@@ -542,7 +542,7 @@ func trends(l *Loop, rep *Report) string {
 		keys = append(keys, g+"/prose", g+"/pr")
 	}
 	var out []string
-	out = append(out, "Production model on the frozen Argon set and the evaluation-only open-weight sets (Gemma, Phi-4, Mistral Small 4, Llama 4 Scout; never trained on). Argon trains since 2026-10-29 and Llama 3.3 since 2026-11-01:", "",
+	out = append(out, "Production model on the frozen Argon set and the evaluation-only open-weight sets (Gemma, Phi-4, Mistral Small 4, Llama 3.3, Llama 4 Scout; never trained on). Argon trains since 2026-10-29:", "",
 		"| Night | "+strings.Join(keys, " | ")+" |", "|---"+strings.Repeat("|---", len(keys))+"|")
 	start := max(0, len(hist)-14)
 	for _, h := range hist[start:] {

@@ -26,7 +26,6 @@ var FrozenGenres = map[string]int{"blog": 100, "memo": 100, "essay": 100, "pr": 
 // FrozenGenerators are the generators with frozen, never-trained-on sets.
 var FrozenGenerators = []string{
 	"claude:claude-opus-5-5", "claude:claude-sonnet-5-5", "gemini:gemini-4-argon",
-	"mlx:llama-3.3-70b", // local; trained on since 2026-11-01
 }
 
 // Manifest records a checksum for every frozen file, by set. Sealed sets

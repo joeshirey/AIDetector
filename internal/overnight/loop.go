@@ -676,9 +676,21 @@ func (l *Loop) runLocal(ctx context.Context, stopAt time.Time) {
 		if err != nil {
 			continue
 		}
+		// The quota is for the whole run, not each round: subtract what this
+		// model already wrote in earlier rounds tonight.
+		quota := l.Cfg.LocalQuota
+		for _, prev := range l.state.Local {
+			if prev.Gen == gens[0].Name() {
+				quota -= prev.Written
+			}
+		}
+		if quota <= 0 {
+			l.logf("local: %s already wrote its quota of %d tonight", gens[0].Name(), l.Cfg.LocalQuota)
+			continue
+		}
 		until := time.Now().Add(time.Until(stopAt) / time.Duration(len(ready)-i))
-		l.logf("local: %s generating until %s (quota %d)", gens[0].Name(), until.Format("15:04"), l.Cfg.LocalQuota)
-		st := RunLocal(ctx, p, br, gens[0], l.Cfg.Data, until, l.Cfg.LocalQuota, l.Cfg.LocalWorkers, l.Night, l.recordWrite,
+		l.logf("local: %s generating until %s (%d left of quota %d)", gens[0].Name(), until.Format("15:04"), quota, l.Cfg.LocalQuota)
+		st := RunLocal(ctx, p, br, gens[0], l.Cfg.Data, until, quota, l.Cfg.LocalWorkers, l.Night, l.recordWrite,
 			rand.New(rand.NewPCG(l.rng.Uint64(), 2)))
 		l.state.Local = append(l.state.Local, st)
 	}

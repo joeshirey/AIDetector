@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"math/rand/v2"
 	"os"
 	"path/filepath"
@@ -82,6 +83,8 @@ func runOvernight(ctx context.Context, args []string) error {
 	excludeSince := fs.String("exclude-since", "", "gate: leave AI generations written after this time (RFC 3339) out of the candidate")
 	excludeGen := fs.String("exclude-gen", "", "gate: with -exclude-since, only generations from generator directories starting with this")
 	excludeHumanSince := fs.String("exclude-human-since", "", "gate: leave human training files added after this time (RFC 3339; e.g. promotions) out of the candidate")
+	subsample := fs.String("subsample", "", "gate: keep only a stable fraction of one generator's AI files, gen=fraction (e.g. llama-3.3-70b=0.5)")
+	excludeGenStyle := fs.String("exclude-gen-style", "", "gate: drop some styles of one generator, gen:style,style (e.g. llama-3.3-70b:persona,continue)")
 	candDir := fs.String("candidate", "", "gate: gate an existing candidate directory instead of fitting one")
 	weighting := fs.String("weighting", "", "gate: sample weighting for the candidate fit: \"\" or source (each source and its mirrors weigh the same)")
 	denseL2 := fs.Bool("dense-l2", false, "gate: fit with experimental dense word-pattern regularization")
@@ -340,6 +343,37 @@ func runOvernight(ctx context.Context, args []string) error {
 			styles := strings.Split(*excludeStyle, ",")
 			rules = append(rules, func(path, id string) bool {
 				for _, st := range styles {
+					if strings.HasSuffix(id, "~"+st) {
+						return true
+					}
+				}
+				return false
+			})
+		}
+		// -subsample gen=fraction keeps a stable fraction of one generator's
+		// AI files; -exclude-gen-style gen:style,style drops some of its styles.
+		if *subsample != "" {
+			gen, fs, _ := strings.Cut(*subsample, "=")
+			frac, ferr := strconv.ParseFloat(fs, 64)
+			if ferr != nil {
+				return fmt.Errorf("-subsample %q: %w", *subsample, ferr)
+			}
+			rules = append(rules, func(path, id string) bool {
+				if !strings.Contains(path, sep+"ai"+sep+gen+sep) {
+					return false
+				}
+				h := fnv.New32a()
+				h.Write([]byte("subsample:" + id))
+				return float64(h.Sum32()%10000)/10000 >= frac
+			})
+		}
+		if *excludeGenStyle != "" {
+			gen, styles, _ := strings.Cut(*excludeGenStyle, ":")
+			rules = append(rules, func(path, id string) bool {
+				if !strings.Contains(path, sep+"ai"+sep+gen+sep) {
+					return false
+				}
+				for _, st := range strings.Split(styles, ",") {
 					if strings.HasSuffix(id, "~"+st) {
 						return true
 					}
