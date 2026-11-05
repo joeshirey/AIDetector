@@ -24,6 +24,35 @@ type Model struct {
 	Kind    string             `json:"kind"`
 	Bias    float64            `json:"bias"`
 	Weights map[string]float64 `json:"weights"`
+	// FWTrigrams adds 3-grams made only of function words and punctuation
+	// (syntax, not topic). Training and scoring must agree, so it's stored.
+	FWTrigrams bool `json:"fw_trigrams,omitempty"`
+}
+
+// functionWords is a closed set of English function words. Trigrams over
+// them and punctuation capture syntactic habits ("in order to", ", which
+// is") without topic nouns that drift across domains.
+var functionWords = func() map[string]bool {
+	m := map[string]bool{}
+	for _, w := range strings.Fields(`a an the this that these those my your his her its our their
+	i you he she it we they me him us them myself yourself itself ourselves themselves
+	and or but nor so yet for if then than because while although though unless until since whereas
+	as at by from in into of off on onto out over to up with within without about above across after
+	against along among around before behind below beneath beside between beyond during except inside
+	near through throughout toward towards under upon via per
+	is am are was were be been being have has had having do does did doing done
+	will would shall should can could may might must ought
+	not no never only also just even still very too quite rather really more most less least
+	all any both each either neither every few many much several some such other another own same
+	what which who whom whose when where why how whether there here
+	one ones something anything nothing everything someone anyone everyone`) {
+		m[w] = true
+	}
+	return m
+}()
+
+func isFunctionToken(t string) bool {
+	return functionWords[t] || strings.ContainsAny(t, ".,;:!?()—–-") && len([]rune(t)) == 1
 }
 
 var (
@@ -34,7 +63,10 @@ var (
 // Terms returns the distinct unigrams and bigrams in s. Curly quotes are
 // straightened first so the model can't key on typography that depends on
 // where a text was scraped from.
-func Terms(s string) []string {
+func Terms(s string) []string { return TermsWith(s, false) }
+
+// TermsWith is Terms, optionally with function-word trigrams.
+func TermsWith(s string, fwTrigrams bool) []string {
 	toks := tokenRE.FindAllString(strings.ToLower(quotes.Replace(s)), -1)
 	seen := make(map[string]bool, 2*len(toks))
 	var out []string
@@ -49,6 +81,9 @@ func Terms(s string) []string {
 		if i > 0 {
 			add(toks[i-1] + " " + t)
 		}
+		if fwTrigrams && i > 1 && isFunctionToken(toks[i-2]) && isFunctionToken(toks[i-1]) && isFunctionToken(t) {
+			add(toks[i-2] + " " + toks[i-1] + " " + t)
+		}
 	}
 	return out
 }
@@ -56,7 +91,7 @@ func Terms(s string) []string {
 // Logit returns the model's log-odds that s is AI-written, plus each
 // present term's contribution.
 func (m *Model) Logit(s string) (float64, map[string]float64) {
-	terms := Terms(text.Normalize(m.Kind, s))
+	terms := TermsWith(text.Normalize(m.Kind, s), m.FWTrigrams)
 	contrib := map[string]float64{}
 	var known []string
 	for _, t := range terms {
@@ -90,6 +125,8 @@ type TrainOptions struct {
 	DenseL2 bool
 	// Weights are per-document sample weights (nil means all 1).
 	Weights []float64
+	// FWTrigrams adds function-word trigrams (see Model.FWTrigrams).
+	FWTrigrams bool
 }
 
 func DefaultTrainOptions() TrainOptions {
@@ -101,7 +138,7 @@ func Train(kind string, docs []string, isAI []bool, o TrainOptions) *Model {
 	docTerms := make([][]string, len(docs))
 	df := map[string]int{}
 	for i, d := range docs {
-		docTerms[i] = Terms(text.Normalize(kind, d))
+		docTerms[i] = TermsWith(text.Normalize(kind, d), o.FWTrigrams)
 		for _, t := range docTerms[i] {
 			df[t]++
 		}
@@ -190,7 +227,7 @@ func Train(kind string, docs []string, isAI []bool, o TrainOptions) *Model {
 		}
 	}
 
-	m := &Model{Kind: kind, Bias: b, Weights: map[string]float64{}}
+	m := &Model{Kind: kind, Bias: b, Weights: map[string]float64{}, FWTrigrams: o.FWTrigrams}
 	for j, t := range vocab {
 		if math.Abs(w[j]) >= 1e-3 {
 			m.Weights[t] = math.Round(w[j]*1e4) / 1e4

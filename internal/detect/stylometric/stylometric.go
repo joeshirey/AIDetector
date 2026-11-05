@@ -45,6 +45,8 @@ func (*Detector) Detect(_ context.Context, in detect.Input) ([]detect.Signal, er
 	add(aiVocabulary(words, per1k))
 	add(aiPhrases(body, per1k))
 	add(burstiness(sentences))
+	add(proseBurstiness(body))
+	add(clauseUniformity(body))
 	add(emDashes(body, per1k))
 	add(boldLeadBullets(body))
 	add(triplets(sentences))
@@ -87,6 +89,78 @@ func burstiness(sentences []string) *detect.Signal {
 		Weight: 1.0,
 		Detail: fmt.Sprintf("sentence length variation %.2f across %d sentences (lower reads more machine-like)", cv, len(sentences)),
 	}
+}
+
+var (
+	listLineRE = regexp.MustCompile(`^\s*(?:[-*+]|\d+[.)])\s+|^\s*#{1,6}\s`)
+	clauseRE   = regexp.MustCompile(`[,;:—–.!?()]+`)
+)
+
+// proseLines returns the paragraphs of body with bullet and heading lines
+// removed, so list items don't count as sentences.
+func proseParagraphs(body string) []string {
+	var out []string
+	for _, p := range text.Paragraphs(body) {
+		var keep []string
+		for _, line := range strings.Split(p, "\n") {
+			if !listLineRE.MatchString(line) && strings.TrimSpace(line) != "" {
+				keep = append(keep, strings.TrimSpace(line))
+			}
+		}
+		if len(keep) > 0 {
+			out = append(out, strings.Join(keep, " "))
+		}
+	}
+	return out
+}
+
+// proseBurstiness is sentence-length variation within prose paragraphs of
+// two or more sentences. sentence_burstiness counts each bullet as a
+// sentence, so a bulleted AI text can look varied; this ignores lists.
+func proseBurstiness(body string) *detect.Signal {
+	var lens []float64
+	for _, p := range proseParagraphs(body) {
+		ss := text.Sentences(p)
+		if len(ss) < 2 {
+			continue
+		}
+		for _, s := range ss {
+			lens = append(lens, float64(len(text.Words(s))))
+		}
+	}
+	if len(lens) < 5 {
+		return nil
+	}
+	mean, std := text.MeanStd(lens)
+	if mean == 0 {
+		return nil
+	}
+	cv := std / mean
+	return &detect.Signal{Name: "prose_burstiness", Value: cv, AIProb: logistic(cv, 0.45, -0.08), Weight: 0,
+		Detail: fmt.Sprintf("sentence length variation %.2f within prose paragraphs, lists excluded (%d sentences)", cv, len(lens))}
+}
+
+// clauseUniformity is the variation in clause length (words between clause
+// punctuation) across prose paragraphs. Models keep clauses evenly sized.
+func clauseUniformity(body string) *detect.Signal {
+	var lens []float64
+	for _, p := range proseParagraphs(body) {
+		for _, c := range clauseRE.Split(p, -1) {
+			if n := len(text.Words(c)); n > 0 {
+				lens = append(lens, float64(n))
+			}
+		}
+	}
+	if len(lens) < 8 {
+		return nil
+	}
+	mean, std := text.MeanStd(lens)
+	if mean == 0 {
+		return nil
+	}
+	cv := std / mean
+	return &detect.Signal{Name: "clause_uniformity", Value: cv, AIProb: logistic(cv, 0.6, -0.1), Weight: 0,
+		Detail: fmt.Sprintf("clause length variation %.2f across %d clauses (lower reads more machine-like)", cv, len(lens))}
 }
 
 // aiStems are word stems LLMs use far more often than people do. Matching on

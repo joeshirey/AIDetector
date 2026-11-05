@@ -2,6 +2,7 @@ package overnight
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -212,7 +213,16 @@ type FitOptions struct {
 	// the local scorer is running; needs AIDETECTOR_SCORER_URL). The regular
 	// models are copied from production so the fallback stays production's.
 	WithLM bool
+	// Experiments (2026-11-05).
+	SignConstrain  bool           // keep hand-built feature weights on their median-implied side
+	EnableFeatures []string       // experimental detector features to use (others are dropped)
+	FWTrigrams     bool           // function-word trigrams in the word-pattern model
+	Engine         engine.Options // engine.json for the candidate (normalization, short-prose cutoffs)
 }
+
+// ExperimentalFeatures are detector signals not yet adopted: fits leave
+// them out unless FitOptions.EnableFeatures names them.
+var ExperimentalFeatures = []string{"prose_burstiness", "clause_uniformity"}
 
 // RetrainCandidate fits prose and PR models into dir from train-split
 // files and recalibrates the cutoffs with CalibrateCutoffs.
@@ -242,8 +252,21 @@ func RetrainCandidate(ctx context.Context, d Data, dir string, o FitOptions) err
 	trainable := func(path, id string) bool {
 		return split.Of(id) == "train" && (o.Exclude == nil || !o.Exclude(path, id))
 	}
+	drop := map[string]bool{}
+	for _, f := range ExperimentalFeatures {
+		if !slices.Contains(o.EnableFeatures, f) {
+			drop[f] = true
+		}
+	}
+	if o.Engine != (engine.Options{}) { // the candidate scores (and calibrates) with these
+		b, _ := json.MarshalIndent(o.Engine, "", " ")
+		if err := os.WriteFile(filepath.Join(dir, "engine.json"), b, 0o644); err != nil {
+			return err
+		}
+	}
 	for _, k := range []detect.Kind{detect.KindProse, detect.KindPR} {
-		if _, err := train.FitWith(ctx, k, d.TrainDirs(k), dir, train.FitOptions{Keep: trainable, Weighting: o.Weighting, DenseL2: o.DenseL2, WithLM: o.WithLM}); err != nil {
+		if _, err := train.FitWith(ctx, k, d.TrainDirs(k), dir, train.FitOptions{Keep: trainable, Weighting: o.Weighting, DenseL2: o.DenseL2, WithLM: o.WithLM,
+			SignConstrain: o.SignConstrain, Drop: drop, FWTrigrams: o.FWTrigrams, Engine: o.Engine}); err != nil {
 			return fmt.Errorf("fit %s: %w", k, err)
 		}
 	}

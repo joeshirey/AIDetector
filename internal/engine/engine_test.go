@@ -159,3 +159,29 @@ func TestEmbeddedBlockReason(t *testing.T) {
 		}
 	}
 }
+
+// A fitted model's listed log-odds (signals, baseline, and other) add up to
+// the raw score's log-odds, so explanations account for the whole score.
+func TestReasonsAddUp(t *testing.T) {
+	e := Default()
+	txt := "I spent the weekend fixing the fence, which had been leaning for years. The posts were rotten at the base, so I dug them out one by one and set new ones in concrete. It took longer than I expected, mostly because the old concrete footings were huge. By Sunday night my back hurt, but the fence stood straight for the first time since we bought the house. Next spring I want to paint it, though my wife thinks we should just let it weather."
+	r, err := e.Analyze(context.Background(), detect.Input{Text: txt, Kind: detect.KindProse})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum, baseline := 0.0, false
+	for _, x := range r.Reasons {
+		if x.Direction == "info" || x.Direction == "warning" || x.Impact == "decisive" {
+			continue
+		}
+		sum += x.Logit
+		baseline = baseline || x.Signal == "baseline"
+	}
+	if !baseline {
+		t.Fatal("no baseline reason")
+	}
+	want := math.Log(r.Raw / (100 - r.Raw))
+	if math.Abs(sum-want) > 0.01 {
+		t.Errorf("reasons sum to %.3f log-odds, raw score is %.3f", sum, want)
+	}
+}

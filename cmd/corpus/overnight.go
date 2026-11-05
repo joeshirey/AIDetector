@@ -83,6 +83,11 @@ func runOvernight(ctx context.Context, args []string) error {
 	excludeSince := fs.String("exclude-since", "", "gate: leave AI generations written after this time (RFC 3339) out of the candidate")
 	excludeGen := fs.String("exclude-gen", "", "gate: with -exclude-since, only generations from generator directories starting with this")
 	excludeHumanSince := fs.String("exclude-human-since", "", "gate: leave human training files added after this time (RFC 3339; e.g. promotions) out of the candidate")
+	signConstrain := fs.Bool("sign-constrain", false, "gate: keep hand-built feature weights on the side their medians point")
+	fwTrigrams := fs.Bool("fw-trigrams", false, "gate: add function-word trigrams to the word-pattern model")
+	alignNorm := fs.Bool("align-norm", false, "gate: strip links/mentions/greetings before every detector, not just word patterns")
+	shortProse := fs.String("short-prose", "", "gate: blend segment and document cutoffs for short prose, BELOW:ABOVE words (e.g. 200:450)")
+	enableFeatures := fs.String("enable-features", "", "gate: experimental features to use, comma-separated (prose_burstiness, clause_uniformity)")
 	withLM := fs.Bool("lm", false, "gate: fit token-probability (scorer) models too; needs AIDETECTOR_SCORER_URL")
 	subsample := fs.String("subsample", "", "gate: keep only a stable fraction of one generator's AI files, gen=fraction (e.g. llama-3.3-70b=0.5)")
 	excludeGenStyle := fs.String("exclude-gen-style", "", "gate: drop some styles of one generator, gen:style,style (e.g. llama-3.3-70b:persona,continue)")
@@ -390,13 +395,21 @@ func runOvernight(ctx context.Context, args []string) error {
 			}
 			return false
 		}
+		var engOpts engine.Options
+		engOpts.AlignNormalization = *alignNorm
+		if *shortProse != "" {
+			if _, err := fmt.Sscanf(*shortProse, "%d:%d", &engOpts.ShortProse.Below, &engOpts.ShortProse.Above); err != nil {
+				return fmt.Errorf("-short-prose %q: want BELOW:ABOVE", *shortProse)
+			}
+		}
 		if *candDir != "" {
 			dir = *candDir
 			if !filepath.IsAbs(dir) {
 				dir = filepath.Join(abs(*runRoot), dir)
 			}
 		} else if err := overnight.RetrainCandidate(ctx, d, dir, overnight.FitOptions{Exclude: exclude, KeepCutoffs: *keepCutoffs,
-			Weighting: *weighting, DenseL2: *denseL2, WithLM: *withLM}); err != nil {
+			Weighting: *weighting, DenseL2: *denseL2, WithLM: *withLM,
+			SignConstrain: *signConstrain, FWTrigrams: *fwTrigrams, Engine: engOpts, EnableFeatures: splitList(*enableFeatures)}); err != nil {
 			return err
 		}
 		fmt.Printf("candidate fit in %s\n", time.Since(start).Round(time.Second))
@@ -643,6 +656,24 @@ func runOvernight(ctx context.Context, args []string) error {
 		}
 		return nil
 
+	case "short":
+		// Short-prose labeling: AI caught at 60+ vs human flagged at 60+.
+		dir := *outName
+		if !filepath.IsAbs(dir) {
+			dir = filepath.Join(abs(*runRoot), dir)
+		}
+		cand, err := engine.FromDir(dir)
+		if err != nil {
+			return err
+		}
+		r, err := overnight.MeasureShortText(ctx, cand, d, 450)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("short prose (<450 words): AI at 60+ %d/%d (%.1f%%); human at 60+ %d/%d (%.2f%%)\n", r.AIShort60, r.AIShort,
+			100*float64(r.AIShort60)/float64(max(r.AIShort, 1)), r.HumanShort60, r.HumanShort, 100*float64(r.HumanShort60)/float64(max(r.HumanShort, 1)))
+		return nil
+
 	case "seal-modern":
 		m, err := d.LoadManifest()
 		if err != nil {
@@ -804,4 +835,14 @@ func parseUntil(s string) (time.Time, error) {
 		stop = stop.AddDate(0, 0, 1)
 	}
 	return stop, nil
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

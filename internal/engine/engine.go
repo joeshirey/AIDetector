@@ -46,7 +46,7 @@ type Result struct {
 type Reason struct {
 	Signal    string   `json:"signal"`
 	Direction string   `json:"direction" jsonschema:"AI, human, warning, or info"`
-	Impact    string   `json:"impact" jsonschema:"decisive, high, medium, or low"`
+	Impact    string   `json:"impact" jsonschema:"decisive, high, medium, or low; baseline and other for the two lines that make a fitted model's log-odds add up"`
 	Logit     float64  `json:"log_odds" jsonschema:"contribution to the score in log-odds; positive pushes toward AI"`
 	Observed  float64  `json:"observed"`
 	TypicalH  *float64 `json:"typical_human,omitempty" jsonschema:"median value in human training text"`
@@ -69,6 +69,24 @@ type Engine struct {
 	thresholds map[string]Thresholds
 	lm         *perplexity.Detector
 	lmKinds    map[detect.Kind]bool // kinds scored by a model fitted with lm_* features
+	opts       Options
+}
+
+// Options are experimental engine behaviors, read from engine.json next to
+// the models. Production ships without the file, so all are off.
+type Options struct {
+	// AlignNormalization strips links, issue references, @mentions, and (for
+	// prose) email greetings and sign-offs before every detector, not just
+	// the word-pattern model, so all signals and the word count see the
+	// same text.
+	AlignNormalization bool `json:"align_normalization,omitempty"`
+	// ShortProse smooths prose document cutoffs by length: at or below
+	// Below words the stricter segment cutoffs apply, at or above Above the
+	// document cutoffs, and in between a linear blend. 0 turns it off.
+	ShortProse struct {
+		Below int `json:"below"`
+		Above int `json:"above"`
+	} `json:"short_prose,omitempty"`
 }
 
 // Optional detectors may fail (e.g. a local service is down) without failing
@@ -218,7 +236,9 @@ func fromFS(models fs.FS) *Engine {
 		}
 		return true
 	}
-	e := Heuristic()
+	var opts Options
+	loadModel("engine.json", &opts)
+	e := HeuristicWith(opts)
 	e.models = map[detect.Kind]*calibrate.Model{}
 	e.lmKinds = map[detect.Kind]bool{}
 	words := map[detect.Kind]*ngram.Model{}
@@ -242,8 +262,13 @@ func fromFS(models fs.FS) *Engine {
 // Heuristic returns an engine that ignores fitted models and uses the
 // hand-set signal weights, for comparison. It includes the token-probability
 // scorer when AIDETECTOR_SCORER_URL points at a running one.
-func Heuristic() *Engine {
+func Heuristic() *Engine { return HeuristicWith(Options{}) }
+
+// HeuristicWith is Heuristic with engine options (training uses it so the
+// features it learns from match how the candidate will score).
+func HeuristicWith(o Options) *Engine {
 	e := New(stylometric.New(), devtext.New(), signs.New())
+	e.opts = o
 	if lm := perplexity.FromEnv(); lm != nil {
 		e.lm = lm
 		e.detectors = append(e.detectors, lm)
@@ -311,6 +336,12 @@ func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 	if in.Kind == detect.KindProse {
 		in.Text, excluded = text.PrepareProse(in.Text)
 	}
+	if e.opts.AlignNormalization {
+		in.Text = text.StripLinks(in.Text)
+		if in.Kind == detect.KindProse {
+			in.Text = text.StripEnvelope(in.Text)
+		}
+	}
 	res := Result{Kind: in.Kind, WordCount: len(text.Words(in.Text))}
 	if e.lm != nil {
 		res.Scorer = e.lm.Model()
@@ -344,7 +375,7 @@ func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 	raw := e.score(in.Kind, signals, res.WordCount)
 	res.Cutoffs = e.Thresholds(in.Kind)
 	res.RawScore, res.Raw = int(math.Round(raw)), raw
-	res.Score = int(math.Round(e.scale(in.Kind, raw, signals)))
+	res.Score = int(math.Round(e.scaleDoc(in.Kind, raw, signals, res.WordCount)))
 	res.Label = Label(res.Score)
 	res.Confidence = confidenceLabel(conf, signals)
 	if n := minWords[in.Kind]; res.WordCount < n && res.Score < 97 {
@@ -437,6 +468,21 @@ func (e *Engine) scale(k detect.Kind, raw float64, signals []detect.Signal) floa
 	return e.scaleWith(e.Thresholds(k), raw, signals)
 }
 
+// scaleDoc scales a whole document's raw score, with length smoothing for
+// short prose when the ShortProse option is on.
+func (e *Engine) scaleDoc(k detect.Kind, raw float64, signals []detect.Signal, words int) float64 {
+	t := e.Thresholds(k)
+	sp := e.opts.ShortProse
+	if k == detect.KindProse && sp.Above > sp.Below && sp.Below > 0 && words < sp.Above {
+		if seg, ok := e.thresholds[e.ThresholdKey(k)+".segment"]; ok {
+			f := min(max(float64(words-sp.Below)/float64(sp.Above-sp.Below), 0), 1)
+			blend := func(a, b int) int { return int(math.Round(float64(a)*(1-f) + float64(b)*f)) }
+			t.Mixed, t.LikelyAI, t.AI = blend(seg.Mixed, t.Mixed), blend(seg.LikelyAI, t.LikelyAI), blend(seg.AI, t.AI)
+		}
+	}
+	return e.scaleWith(t, raw, signals)
+}
+
 func (e *Engine) scaleWith(t Thresholds, raw float64, signals []detect.Signal) float64 {
 	scaled := t.Scale(raw)
 	for _, s := range signals {
@@ -481,14 +527,19 @@ func (e *Engine) reasons(k detect.Kind, signals []detect.Signal, words int) []Re
 		}
 		out = append(out, r)
 	}
-	if m := e.models[k]; m != nil {
+	var total float64            // a fitted model's full log-odds
+	contrib := map[string]bool{} // signals that are model contributions
+	m := e.models[k]
+	if m != nil {
 		feats := map[string]float64{}
 		for _, s := range signals {
 			if !s.Decisive && s.Detector != "sanitizer" && s.Detector != "prepare" {
 				feats[s.Name] = s.Value
 			}
 		}
+		total = m.Bias
 		for _, c := range m.Contributions(feats, words) {
+			total += c.Logit
 			if !c.Present {
 				continue
 			}
@@ -503,6 +554,7 @@ func (e *Engine) reasons(k detect.Kind, signals []detect.Signal, words int) []Re
 			if c.Name == "log_words" {
 				detail = fmt.Sprintf("length: %d words", words)
 			}
+			contrib[c.Name] = true
 			add(Reason{Signal: c.Name, Logit: c.Logit, Observed: c.Value, TypicalH: &h, TypicalAI: &a, Detail: detail})
 		}
 	} else {
@@ -534,6 +586,29 @@ func (e *Engine) reasons(k detect.Kind, signals []detect.Signal, words int) []Re
 	})
 	if len(out) > 8 {
 		out = out[:8]
+	}
+	if m != nil {
+		// Make the listed log-odds add up to the model's: the starting point
+		// (the score of a text that's average on every signal; the training
+		// data leans AI, so it's usually well above 0) plus everything too
+		// small or too contradictory to list.
+		shown := 0.0
+		for _, r := range out {
+			if contrib[r.Signal] {
+				shown += r.Logit
+			}
+		}
+		dir := func(x float64) string {
+			if x > 0 {
+				return "AI"
+			}
+			return "human"
+		}
+		out = append(out,
+			Reason{Signal: "baseline", Direction: dir(m.Bias), Impact: "baseline", Logit: m.Bias,
+				Detail: fmt.Sprintf("starting point: a text that's average on every signal would get %.0f%% from the model before the signals above move it", 100/(1+math.Exp(-m.Bias)))},
+			Reason{Signal: "other_signals", Direction: dir(total - m.Bias - shown), Impact: "other", Logit: total - m.Bias - shown,
+				Detail: "all remaining signals combined (each too small to list, or pointing against its typical value)"})
 	}
 	return append(out, info...)
 }

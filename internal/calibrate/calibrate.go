@@ -94,11 +94,30 @@ func (m *Model) Prob(feats map[string]float64, words int) float64 {
 }
 
 // Fit trains a model with L2-regularized gradient descent.
-func Fit(kind string, rows []Row) *Model {
+func Fit(kind string, rows []Row) *Model { return FitWith(kind, rows, FitOptions{}) }
+
+// FitOptions controls FitWith.
+type FitOptions struct {
+	// SignConstrain keeps each hand-built feature's weight on the side its
+	// human and AI medians point (means when the medians tie), clamping it
+	// to zero rather than letting it flip. Features that overlap with the
+	// word-pattern model otherwise learn compensating weights of the wrong
+	// sign, which reads as nonsense in explanations and inverts signals
+	// like an AI PR template on new text. word_patterns and log_words are
+	// left free.
+	SignConstrain bool
+	// Drop leaves these features out of the model.
+	Drop map[string]bool
+}
+
+// FitWith fits a model with options.
+func FitWith(kind string, rows []Row, o FitOptions) *Model {
 	names := map[string]bool{wordsFeature: true}
 	for _, r := range rows {
 		for n := range r.Feats {
-			names[n] = true
+			if !o.Drop[n] {
+				names[n] = true
+			}
 		}
 	}
 	m := &Model{Kind: kind, Missing: map[string]float64{}, Trained: len(rows)}
@@ -116,6 +135,7 @@ func Fit(kind string, rows []Row) *Model {
 	// "missing" indicator column per feature.
 	k := len(m.Features)
 	x := make([][]float64, len(rows))
+	sign := map[string]float64{} // expected direction per feature (SignConstrain)
 	for j := range m.Features {
 		f := &m.Features[j]
 		var sum, sq float64
@@ -148,6 +168,11 @@ func Fit(kind string, rows []Row) *Model {
 			}
 		}
 		f.HumanMedian, f.AIMedian = median(human), median(ai)
+		if d := f.AIMedian - f.HumanMedian; d != 0 {
+			sign[f.Name] = math.Copysign(1, d)
+		} else if d := mean(ai) - mean(human); d != 0 {
+			sign[f.Name] = math.Copysign(1, d)
+		}
 	}
 	for i, r := range rows {
 		x[i] = make([]float64, 2*k)
@@ -185,6 +210,13 @@ func Fit(kind string, rows []Row) *Model {
 		for j := range w {
 			w[j] -= lr * (grad[j]/n + l2*w[j])
 		}
+		if o.SignConstrain { // project onto the allowed sign (feature columns only)
+			for j, f := range m.Features {
+				if s, ok := sign[f.Name]; ok && f.Name != "word_patterns" && f.Name != wordsFeature && w[j]*s < 0 {
+					w[j] = 0
+				}
+			}
+		}
 		b -= lr * gb / n
 	}
 	m.Bias = b
@@ -193,6 +225,17 @@ func Fit(kind string, rows []Row) *Model {
 		m.Missing[m.Features[j].Name] = w[k+j]
 	}
 	return m
+}
+
+func mean(xs []float64) float64 {
+	if len(xs) == 0 {
+		return 0
+	}
+	s := 0.0
+	for _, x := range xs {
+		s += x
+	}
+	return s / float64(len(xs))
 }
 
 func median(xs []float64) float64 {

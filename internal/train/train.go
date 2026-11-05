@@ -48,6 +48,14 @@ type FitOptions struct {
 	// "+balance-generator" to rescale the AI side so each family or generator
 	// carries the same total weight. "" counts every file once.
 	Weighting string
+	// SignConstrain and Drop are passed to calibrate (see calibrate.FitOptions).
+	SignConstrain bool
+	Drop          map[string]bool
+	// FWTrigrams adds function-word trigrams to the word-pattern model.
+	FWTrigrams bool
+	// Engine options the features are computed under (must match the
+	// candidate's engine.json).
+	Engine engine.Options
 	// DenseL2 decays every word-pattern weight at every step (see
 	// ngram.TrainOptions). At the default strength it cut recall by about 1.5
 	// points on 2026-10-29, so it stays off until the strength is retuned.
@@ -57,7 +65,7 @@ type FitOptions struct {
 // FitWith fits a kind's word-pattern model and calibrated model.
 func FitWith(ctx context.Context, kind detect.Kind, dirs []string, outDir string, o FitOptions) (*FitResult, error) {
 	keep, withLM := o.Keep, o.WithLM
-	he := engine.Heuristic()
+	he := engine.HeuristicWith(o.Engine)
 	if withLM && he.Scorer() == nil {
 		return nil, fmt.Errorf("-lm needs a running scorer at $AIDETECTOR_SCORER_URL")
 	}
@@ -88,6 +96,7 @@ func FitWith(ctx context.Context, kind detect.Kind, dirs []string, outDir string
 	nopts := func(idx []int) ngram.TrainOptions {
 		t := ngram.DefaultTrainOptions()
 		t.DenseL2 = o.DenseL2
+		t.FWTrigrams = o.FWTrigrams
 		if weights != nil {
 			t.Weights = make([]float64, len(idx))
 			for k, i := range idx {
@@ -133,7 +142,7 @@ func FitWith(ctx context.Context, kind detect.Kind, dirs []string, outDir string
 			rows[i].Weight = weights[i]
 		}
 	}
-	m := calibrate.Fit(string(kind), rows)
+	m := calibrate.FitWith(string(kind), rows, calibrate.FitOptions{SignConstrain: o.SignConstrain, Drop: o.Drop})
 	res := &FitResult{Model: m, Words: words, Human: r.Human, AI: r.AI,
 		ModelPath: filepath.Join(outDir, string(kind)+".json"), NgramPath: filepath.Join(outDir, string(kind)+".ngram.json")}
 	if withLM {

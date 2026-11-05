@@ -522,3 +522,49 @@ func MeasureModern(ctx context.Context, e *engine.Engine, d Data) ([]ModernRow, 
 	}
 	return out, nil
 }
+
+// ShortTextRow is how an engine labels short prose: the share of AI and of
+// human documents under maxWords that score 60+ (test-split AI text and
+// checking-half human pool text).
+type ShortTextRow struct {
+	AIShort, AIShort60       int
+	HumanShort, HumanShort60 int
+}
+
+func MeasureShortText(ctx context.Context, e *engine.Engine, d Data, maxWords int) (ShortTextRow, error) {
+	var r ShortTextRow
+	isShort := func(path string) bool { return len(strings.Fields(readText(path))) < maxWords }
+	for _, g := range Genres {
+		if g.Det != detect.KindProse {
+			continue
+		}
+		ai, err := train.ScoreFiles(ctx, e, []string{filepath.Join(d.Dir(g), "ai")}, detect.KindProse,
+			func(path, id string) bool { return split.Of(id) == "test" && isShort(path) })
+		if err != nil {
+			return r, err
+		}
+		for _, s := range ai {
+			r.AIShort++
+			if s.Score >= 60 {
+				r.AIShort60++
+			}
+		}
+	}
+	for name, dir := range d.FreshPools() {
+		if PoolKind(name) != detect.KindProse {
+			continue
+		}
+		hs, err := train.ScoreFiles(ctx, e, []string{dir}, detect.KindProse,
+			func(path, id string) bool { return !FinalHoldout(id) && !split.Calib(id) && isShort(path) })
+		if err != nil {
+			return r, err
+		}
+		for _, s := range hs {
+			r.HumanShort++
+			if s.Score >= 60 {
+				r.HumanShort60++
+			}
+		}
+	}
+	return r, nil
+}
