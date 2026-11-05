@@ -220,6 +220,18 @@ type FitOptions struct {
 	Engine         engine.Options // engine.json for the candidate (normalization, short-prose cutoffs)
 }
 
+// ReleaseFitOptions are how the shipped models were fit (2026-11-05):
+// source weighting with generator balancing, sign-constrained weights, and
+// production's engine options (engine.json), so loop candidates differ from
+// production only in their data.
+func ReleaseFitOptions() FitOptions {
+	o := FitOptions{Weighting: "source+balance-generator", SignConstrain: true}
+	if b, err := engine.EmbeddedFile("engine.json"); err == nil {
+		json.Unmarshal(b, &o.Engine)
+	}
+	return o
+}
+
 // ExperimentalFeatures are detector signals not yet adopted: fits leave
 // them out unless FitOptions.EnableFeatures names them.
 var ExperimentalFeatures = []string{"prose_burstiness", "clause_uniformity"}

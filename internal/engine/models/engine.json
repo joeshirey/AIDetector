@@ -1,0 +1,7 @@
+{
+ "align_normalization": true,
+ "short_prose": {
+  "below": 150,
+  "above": 350
+ }
+}

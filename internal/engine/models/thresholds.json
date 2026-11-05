@@ -1,29 +1,29 @@
 {
  "pr": {
-  "mixed": 71,
+  "mixed": 70,
   "likely_ai": 85,
-  "ai": 92,
-  "human_at_mixed": 0.04387755102040816,
-  "human_at_likely_ai": 0.017346938775510204,
-  "human_at_ai": 0.006122448979591836,
+  "ai": 93,
+  "human_at_mixed": 0.05,
+  "human_at_likely_ai": 0.0163265306122449,
+  "human_at_ai": 0.00510204081632653,
   "calibrated_on": 971
  },
  "prose": {
-  "mixed": 32,
-  "likely_ai": 49,
-  "ai": 69,
-  "human_at_mixed": 0.03084223013048636,
+  "mixed": 28,
+  "likely_ai": 45,
+  "ai": 64,
+  "human_at_mixed": 0.03202846975088968,
   "human_at_likely_ai": 0.014234875444839857,
-  "human_at_ai": 0.002372479240806643,
+  "human_at_ai": 0.005931198102016607,
   "calibrated_on": 793
  },
  "prose.segment": {
-  "mixed": 60,
-  "likely_ai": 79,
-  "ai": 81,
-  "human_at_mixed": 0.01644962302947224,
-  "human_at_likely_ai": 0.003198537811286269,
-  "human_at_ai": 0.002513136851724926,
-  "calibrated_on": 4281
+  "mixed": 55,
+  "likely_ai": 77,
+  "ai": 79,
+  "human_at_mixed": 0.023448275862068966,
+  "human_at_likely_ai": 0.0036781609195402297,
+  "human_at_ai": 0.002528735632183908,
+  "calibrated_on": 4262
  }
 }

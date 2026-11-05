@@ -79,7 +79,11 @@ the same thing for a blog post as it does for a PR description:
 You also get:
 
 - `reasons`: what moved the score, strongest first. Each one has a
-  direction and a size. Most also show typical values for human and AI text.
+  direction and a size (in log-odds). Most also show typical values for
+  human and AI text. Two closing lines make the sizes add up to the score:
+  `baseline`, the model's starting point for a text that's average on every
+  signal (usually well toward AI, since the training data leans that way),
+  and `other_signals`, everything too small to list.
 - `segments` and `ai_fraction` for long prose. These score the text in
   chunks of about 200 words (handy when only part of a document is AI).
   Short chunks swing more than whole documents, so segments have their own
@@ -100,20 +104,22 @@ with Claude Code" in a PR description. They push the score to 97 or higher.
 
 ## How accurate is it?
 
-I measured this on 2026-10-30 on text that was held out from training.
+I measured this on 2026-11-05 on text that was held out from training.
 
 The test split is 20% of the corpus:
 
 | Kind | AUROC | AI caught with 1% of human text flagged |
 |---|---|---|
-| Prose (blogs, technical blogs, memos, essays) | 0.996 | 95% |
-| PR descriptions | 0.996 | 92% |
+| Prose (blogs, technical blogs, memos, essays) | 0.996 | 93% |
+| PR descriptions | 0.996 | 93% |
 
-Frozen sets of text from models held out of training measure newer models:
-recall at 1% false positives is 97% on prose and 95% on PRs for Gemini 4
-Argon (up from 94% and 93% before Argon text was added), 97 to 100% for
-Claude Opus and Sonnet 5.5, and 99% on prose for Gemma 4, which has never
-been trained on.
+Frozen sets of 450 texts per model, never trained on, measure newer
+models (recall at 1% false positives, prose): Gemini 4 Argon 97%, Claude
+Opus and Sonnet 5.5 98 to 99%. Open-weight families the detector has never
+seen do about as well (Gemma 4 99%, Phi-4 97%, Mistral Small 4 98%), with
+one exception: Llama. Llama 3.3 70B and Llama 4 Scout come in at 87% on
+prose and lower on PRs. Training on Llama text closed most of that gap but
+flagged more human writing at every dose tried, so it's an open problem.
 
 For false positives I used fresh human text. None of it was in training and
 this half wasn't used to pick the cutoffs either. The PRs are from 105 repos
@@ -121,28 +127,28 @@ the training corpus had never touched:
 
 | Human texts | Labeled inconclusive | Labeled likely AI or AI | Labeled AI | Segments at 60+ |
 |---|---|---|---|---|
-| Learner essays (293) | 0% | 0.3% | 0% | 0% |
-| Blog posts (263) | 0.8% | 0.8% | 0.4% | 0.2% |
-| Technical blog posts (321)* | 0% | 0.6% | 0% | 0.4% |
-| Non-tech Medium, pre-2021 (656) | 1.5% | 0.5% | 0% | 0.4% |
-| PR descriptions (980) | 3.1% | 1.8% | 0.6% | |
-| Memos and emails (287) | 4.2% | 3.1% | 0.3% | |
+| Learner essays (293) | 0.3% | 0% | 0% | 0% |
+| Blog posts (263) | 1.5% | 0.8% | 0.4% | 0.4% |
+| Technical blog posts (321)* | 0.3% | 0.3% | 0% | 0.3% |
+| Non-tech Medium, pre-2021 (656) | 2.0% | 0.5% | 0% | 0.5% |
+| PR descriptions (980) | 3.5% | 1.7% | 0.5% | |
+| Memos and emails (287) | 1.0% | 0.3% | 0.3% | |
 
 Human writing from after ChatGPT is a blind spot for a corpus that's all
 pre-2022, since people have picked up some LLM phrasing. As a check, 161
 posts from 2023 to 2026 by five writers who say they don't use AI to write
 are scored every night, report-only: Martin Fowler (41), Graham Marlow (60),
 Kristen Hall-Geisler (52), Anne Winchell (5), and Mel Mitchell-Jackson (3).
-Four of them are clean: no post scores 60+. Marlow isn't: 5 of his 60 posts
-score 60+ and 2 score 80+. They're his shortest, most polished essays
+Four of them are clean: no post scores 60+. Marlow isn't: 6 of his 60 posts
+score 60+ and 3 score 80+. They're his shortest, most polished essays
 (200 to 400 words, very even sentence lengths), the kind of human writing
 this detector is weakest on. `corpus harvest -pool -source fowler` and
 `-source known-human` fetch them (cached, not redistributed), and
 `corpus overnight modern` scores them.
 
 A separate 10% of each pool (the final holdout) was checked before each
-release: for this one, 1 of 398 human prose documents and 3 of 225 PRs
-scored 60+, against 3 and 4 for the previous release.
+release: for this one, 2 of 398 human prose documents and 3 of 225 PRs
+scored 60+, against 1 and 3 for the previous release.
 
 \* Posts by Richard Seroter, Scott Hanselman, and technical Medium authors.
 Other posts by the same authors are in training, so this row is optimistic.
@@ -194,6 +200,12 @@ their text will often score as AI even though the ideas are theirs:
 
 Formal writing and templates (form letters, PR templates) also score higher
 than casual writing does, and so does human writing about AI itself.
+
+Short prose needs more evidence. Below about 350 words the cutoffs blend
+toward the stricter segment cutoffs, because short polished human writing
+was the biggest source of false positives. The cost: about 87% of AI texts
+under 450 words get "likely AI" or higher, against 93% before; the benefit:
+0.4% of human texts that short do, against 1.8%.
 
 The human training text is all from before ChatGPT. People write a little
 differently now, having picked up some LLM phrasing. The only check on
