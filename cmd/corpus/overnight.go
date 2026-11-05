@@ -86,6 +86,7 @@ func runOvernight(ctx context.Context, args []string) error {
 	signConstrain := fs.Bool("sign-constrain", false, "gate: keep hand-built feature weights on the side their medians point")
 	fwTrigrams := fs.Bool("fw-trigrams", false, "gate: add function-word trigrams to the word-pattern model")
 	alignNorm := fs.Bool("align-norm", false, "gate: strip links/mentions/greetings before every detector, not just word patterns")
+	shortModel := fs.String("short-model", "", "gate: fit and use a short-text prose model, MAX:BLEND words (e.g. 400:150)")
 	shortProse := fs.String("short-prose", "", "gate: blend segment and document cutoffs for short prose, BELOW:ABOVE words (e.g. 200:450)")
 	enableFeatures := fs.String("enable-features", "", "gate: experimental features to use, comma-separated (prose_burstiness, clause_uniformity)")
 	withLM := fs.Bool("lm", false, "gate: fit token-probability (scorer) models too; needs AIDETECTOR_SCORER_URL")
@@ -402,6 +403,13 @@ func runOvernight(ctx context.Context, args []string) error {
 				return fmt.Errorf("-short-prose %q: want BELOW:ABOVE", *shortProse)
 			}
 		}
+		shortMax := 0
+		if *shortModel != "" {
+			if _, err := fmt.Sscanf(*shortModel, "%d:%d", &engOpts.ShortModel.Max, &engOpts.ShortModel.Blend); err != nil {
+				return fmt.Errorf("-short-model %q: want MAX:BLEND", *shortModel)
+			}
+			shortMax = engOpts.ShortModel.Max
+		}
 		if *candDir != "" {
 			dir = *candDir
 			if !filepath.IsAbs(dir) {
@@ -409,7 +417,7 @@ func runOvernight(ctx context.Context, args []string) error {
 			}
 		} else if err := overnight.RetrainCandidate(ctx, d, dir, overnight.FitOptions{Exclude: exclude, KeepCutoffs: *keepCutoffs,
 			Weighting: *weighting, DenseL2: *denseL2, WithLM: *withLM,
-			SignConstrain: *signConstrain, FWTrigrams: *fwTrigrams, Engine: engOpts, EnableFeatures: splitList(*enableFeatures)}); err != nil {
+			SignConstrain: *signConstrain, FWTrigrams: *fwTrigrams, Engine: engOpts, EnableFeatures: splitList(*enableFeatures), ShortMax: shortMax}); err != nil {
 			return err
 		}
 		fmt.Printf("candidate fit in %s\n", time.Since(start).Round(time.Second))

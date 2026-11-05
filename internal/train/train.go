@@ -53,6 +53,9 @@ type FitOptions struct {
 	Drop          map[string]bool
 	// FWTrigrams adds function-word trigrams to the word-pattern model.
 	FWTrigrams bool
+	// ShortMax, if set, also fits <kind>.short.json: the same calibration on
+	// training texts under ShortMax words (see engine Options.ShortModel).
+	ShortMax int
 	// Engine options the features are computed under (must match the
 	// candidate's engine.json).
 	Engine engine.Options
@@ -143,6 +146,20 @@ func FitWith(ctx context.Context, kind detect.Kind, dirs []string, outDir string
 		}
 	}
 	m := calibrate.FitWith(string(kind), rows, calibrate.FitOptions{SignConstrain: o.SignConstrain, Drop: o.Drop})
+	if o.ShortMax > 0 && !withLM {
+		var shortRows []calibrate.Row
+		for _, r := range rows {
+			if r.Words < o.ShortMax {
+				shortRows = append(shortRows, r)
+			}
+		}
+		if len(shortRows) >= 200 {
+			sm := calibrate.FitWith(string(kind), shortRows, calibrate.FitOptions{SignConstrain: o.SignConstrain, Drop: o.Drop})
+			if err := WriteJSON(filepath.Join(outDir, string(kind)+".short.json"), sm); err != nil {
+				return nil, err
+			}
+		}
+	}
 	res := &FitResult{Model: m, Words: words, Human: r.Human, AI: r.AI,
 		ModelPath: filepath.Join(outDir, string(kind)+".json"), NgramPath: filepath.Join(outDir, string(kind)+".ngram.json")}
 	if withLM {

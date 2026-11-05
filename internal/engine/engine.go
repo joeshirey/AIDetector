@@ -68,7 +68,8 @@ type Engine struct {
 	models     map[detect.Kind]*calibrate.Model
 	thresholds map[string]Thresholds
 	lm         *perplexity.Detector
-	lmKinds    map[detect.Kind]bool // kinds scored by a model fitted with lm_* features
+	lmKinds    map[detect.Kind]bool             // kinds scored by a model fitted with lm_* features
+	short      map[detect.Kind]*calibrate.Model // whole-document models for short texts (ShortModel)
 	opts       Options
 }
 
@@ -87,6 +88,14 @@ type Options struct {
 		Below int `json:"below"`
 		Above int `json:"above"`
 	} `json:"short_prose,omitempty"`
+	// ShortModel scores whole prose documents under Max words with a
+	// separate model fitted on short texts (prose.short.json), blending
+	// into the main model over the Blend words below Max so scores don't
+	// jump at the boundary. Segments always use the main model.
+	ShortModel struct {
+		Max   int `json:"max"`
+		Blend int `json:"blend"`
+	} `json:"short_model,omitempty"`
 }
 
 // Optional detectors may fail (e.g. a local service is down) without failing
@@ -249,6 +258,13 @@ func fromFS(models fs.FS) *Engine {
 		} else if loadModel(string(k)+".json", &m) {
 			e.models[k] = &m
 		}
+		var sm calibrate.Model
+		if e.opts.ShortModel.Max > 0 && !e.lmKinds[k] && loadModel(string(k)+".short.json", &sm) {
+			if e.short == nil {
+				e.short = map[detect.Kind]*calibrate.Model{}
+			}
+			e.short[k] = &sm
+		}
 		var w ngram.Model
 		if loadModel(string(k)+".ngram.json", &w) {
 			words[k] = &w
@@ -372,7 +388,7 @@ func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 		res.Notes = append(res.Notes, "the text contained hidden or look-alike characters, which were removed before scoring")
 	}
 	conf := lengthConfidence(in.Kind, res.WordCount)
-	raw := e.score(in.Kind, signals, res.WordCount)
+	raw := e.scoreDoc(in.Kind, signals, res.WordCount)
 	res.Cutoffs = e.Thresholds(in.Kind)
 	res.RawScore, res.Raw = int(math.Round(raw)), raw
 	res.Score = int(math.Round(e.scaleDoc(in.Kind, raw, signals, res.WordCount)))
@@ -441,6 +457,36 @@ func (e *Engine) segments(ctx context.Context, in detect.Input, res *Result) err
 
 // score uses the fitted model for the kind if there is one, else the
 // hand-set combination. A decisive signal always sets a floor of 97.
+// scoreDoc is score for a whole document: under ShortModel.Max words it
+// blends in the short-text model.
+func (e *Engine) scoreDoc(k detect.Kind, signals []detect.Signal, words int) float64 {
+	long := e.score(k, signals, words)
+	sm := e.short[k]
+	o := e.opts.ShortModel
+	if sm == nil || words >= o.Max {
+		return long
+	}
+	feats := map[string]float64{}
+	decisive := false
+	for _, s := range signals {
+		if s.Decisive {
+			decisive = true
+			continue
+		}
+		feats[s.Name] = s.Value
+	}
+	short := 100 * sm.Prob(feats, words)
+	f := 0.0 // weight on the main model
+	if o.Blend > 0 {
+		f = min(max(float64(words-(o.Max-o.Blend))/float64(o.Blend), 0), 1)
+	}
+	score := (1-f)*short + f*long
+	if decisive {
+		score = max(score, 97)
+	}
+	return score
+}
+
 func (e *Engine) score(k detect.Kind, signals []detect.Signal, words int) float64 {
 	m := e.models[k]
 	if m == nil {

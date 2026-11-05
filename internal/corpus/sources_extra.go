@@ -5,10 +5,14 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
+
+	"github.com/joeshirey/AIDetector/internal/split"
 )
 
 var (
@@ -152,6 +156,108 @@ func HarvestLearnerEssays(ctx context.Context, n int, seen func(id string) bool)
 					Context: map[string]string{"words": fmt.Sprint(words)}})
 				got++
 			}
+		}
+	}
+	return out, nil
+}
+
+// Short, casual human prose from before ChatGPT, to balance the short
+// human training text (mostly Enron emails): Reddit self-posts from the
+// Webis TL;DR corpus (2006-2016) and personal blog posts from the Blog
+// Authorship Corpus (2004). Only train-split ids are kept so the frozen
+// test split doesn't change.
+
+var (
+	urlLinkRE   = regexp.MustCompile(`\burlLink\b`)
+	headerRE    = regexp.MustCompile(`(?m)^\s*(From|Subject|To|Newsgroups|Date):`)
+	shortStopRE = regexp.MustCompile(`(?i)\b(the|and|to|of|a|i|in|it|is|that|you|was|for|my|on|but|with|this|have|be|not|so|me|at|as|are|just|like|what|they|we)\b`)
+)
+
+// shortProseOK filters a candidate post: 80-350 words, English, at least
+// three sentences, no mail or news headers, not shouting.
+func shortProseOK(t string) bool {
+	w := strings.Fields(t)
+	if len(w) < 80 || len(w) > 350 || headerRE.MatchString(t) {
+		return false
+	}
+	if float64(len(shortStopRE.FindAllString(t, -1)))/float64(len(w)) < 0.25 {
+		return false // probably not English
+	}
+	if strings.Count(t, ".")+strings.Count(t, "!")+strings.Count(t, "?") < 3 {
+		return false
+	}
+	upper, letters := 0, 0
+	for _, r := range t {
+		if unicode.IsLetter(r) {
+			letters++
+			if unicode.IsUpper(r) {
+				upper++
+			}
+		}
+	}
+	return letters > 0 && float64(upper)/float64(letters) < 0.2
+}
+
+// HarvestShortHuman takes n short posts from a datasets-server dataset,
+// sampling pages spread across it.
+func HarvestShortHuman(ctx context.Context, source string, n int, seen func(string) bool) ([]Sample, error) {
+	var dataset, textField, idField string
+	var total int
+	switch source {
+	case "reddit":
+		dataset, textField, idField, total = "webis/tldr-17", "content", "id", 1300000
+	case "blogauth":
+		dataset, textField, idField, total = "tasksource/blog_authorship_corpus", "text", "id", 680000
+	default:
+		return nil, fmt.Errorf("unknown short-human source %q", source)
+	}
+	var out []Sample
+	stride := total / 400 // up to 400 pages of 100 rows, spread across the dataset
+	for page := 0; page < 400 && len(out) < n && ctx.Err() == nil; page++ {
+		offset := page*stride + (page*7919)%max(stride-100, 1)
+		u := fmt.Sprintf("https://datasets-server.huggingface.co/rows?dataset=%s&config=default&split=train&offset=%d&length=100", dataset, offset)
+		var rows struct {
+			Rows []struct {
+				RowIdx int            `json:"row_idx"`
+				Row    map[string]any `json:"row"`
+			} `json:"rows"`
+		}
+		var err error
+		for attempt := range 5 {
+			if attempt > 0 {
+				time.Sleep(time.Duration(attempt*attempt) * 5 * time.Second)
+			}
+			var body string
+			if body, err = getBody(ctx, u); err == nil {
+				if err = json.Unmarshal([]byte(body), &rows); err == nil {
+					break
+				}
+			}
+		}
+		if err != nil {
+			continue // skip a page that won't load
+		}
+		taken := 0
+		for _, r := range rows.Rows {
+			if taken >= 4 || len(out) >= n { // a few per page, for variety
+				break
+			}
+			t, _ := r.Row[textField].(string)
+			t = strings.ReplaceAll(html.UnescapeString(urlLinkRE.ReplaceAllString(t, "")), "\u00a0", " ")
+			t = strings.TrimSpace(spaceRunRE.ReplaceAllString(t, " "))
+			if !shortProseOK(t) {
+				continue
+			}
+			id := fmt.Sprintf("%s-%v", source, r.Row[idField])
+			if source == "blogauth" {
+				id = fmt.Sprintf("%s-%d", source, r.RowIdx)
+			}
+			if split.Of(id) != "train" || seen(id) {
+				continue
+			}
+			out = append(out, Sample{ID: id, Kind: "blog", Source: dataset, Text: t,
+				Context: map[string]string{"title": "", "tags": "personal", "words": fmt.Sprint(len(strings.Fields(t)))}})
+			taken++
 		}
 	}
 	return out, nil

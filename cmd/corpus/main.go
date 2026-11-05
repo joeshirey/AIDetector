@@ -212,6 +212,19 @@ func harvestBlogSource(ctx context.Context, store *corpus.Store, exclude []*corp
 			}
 			f.Close()
 		}
+	case "short-human":
+		// Short casual human prose (pre-2022) into training, half from each source.
+		if pool {
+			return fmt.Errorf("-source short-human is training text; drop -pool")
+		}
+		for _, src := range []string{"reddit", "blogauth"} {
+			got, herr := corpus.HarvestShortHuman(ctx, src, n/2, seen)
+			if herr != nil {
+				return herr
+			}
+			samples = append(samples, got...)
+			log.Printf("%s: %d short posts", src, len(got))
+		}
 	case "known-human":
 		// Blogs whose authors state they don't use AI to write; post-2022, so
 		// evaluation-only. Each author gets a pool: <out>/<key>/pool.

@@ -218,6 +218,7 @@ type FitOptions struct {
 	EnableFeatures []string       // experimental detector features to use (others are dropped)
 	FWTrigrams     bool           // function-word trigrams in the word-pattern model
 	Engine         engine.Options // engine.json for the candidate (normalization, short-prose cutoffs)
+	ShortMax       int            // fit a short-text prose model (with Engine.ShortModel)
 }
 
 // ReleaseFitOptions are how the shipped models were fit (2026-11-05):
@@ -278,7 +279,7 @@ func RetrainCandidate(ctx context.Context, d Data, dir string, o FitOptions) err
 	}
 	for _, k := range []detect.Kind{detect.KindProse, detect.KindPR} {
 		if _, err := train.FitWith(ctx, k, d.TrainDirs(k), dir, train.FitOptions{Keep: trainable, Weighting: o.Weighting, DenseL2: o.DenseL2, WithLM: o.WithLM,
-			SignConstrain: o.SignConstrain, Drop: drop, FWTrigrams: o.FWTrigrams, Engine: o.Engine}); err != nil {
+			SignConstrain: o.SignConstrain, Drop: drop, FWTrigrams: o.FWTrigrams, Engine: o.Engine, ShortMax: o.ShortMax}); err != nil {
 			return fmt.Errorf("fit %s: %w", k, err)
 		}
 	}
