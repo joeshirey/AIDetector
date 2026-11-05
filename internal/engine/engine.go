@@ -96,6 +96,10 @@ type Options struct {
 		Max   int `json:"max"`
 		Blend int `json:"blend"`
 	} `json:"short_model,omitempty"`
+	// NoSegments skips per-segment scoring. Training sets it: fitting only
+	// uses whole-document features, and with the token-probability scorer
+	// each segment is another scorer call.
+	NoSegments bool `json:"-"`
 }
 
 // Optional detectors may fail (e.g. a local service is down) without failing
@@ -408,7 +412,7 @@ func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 		res.Notes = append(res.Notes, "no detector produced a signal for this text")
 	}
 
-	if in.Kind == detect.KindProse && res.WordCount >= 2*segmentWords {
+	if in.Kind == detect.KindProse && res.WordCount >= 2*segmentWords && !e.opts.NoSegments {
 		if err := e.segments(ctx, in, &res); err != nil {
 			return res, err
 		}

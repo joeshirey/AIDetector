@@ -68,7 +68,9 @@ type FitOptions struct {
 // FitWith fits a kind's word-pattern model and calibrated model.
 func FitWith(ctx context.Context, kind detect.Kind, dirs []string, outDir string, o FitOptions) (*FitResult, error) {
 	keep, withLM := o.Keep, o.WithLM
-	he := engine.HeuristicWith(o.Engine)
+	eo := o.Engine
+	eo.NoSegments = true // fitting only uses whole-document features
+	he := engine.HeuristicWith(eo)
 	if withLM && he.Scorer() == nil {
 		return nil, fmt.Errorf("-lm needs a running scorer at $AIDETECTOR_SCORER_URL")
 	}
