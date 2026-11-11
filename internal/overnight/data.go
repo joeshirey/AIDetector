@@ -6,8 +6,6 @@
 package overnight
 
 import (
-	"crypto/sha256"
-	"encoding/binary"
 	"path/filepath"
 	"strings"
 
@@ -111,10 +109,7 @@ func PoolKind(name string) detect.Kind {
 // holdout: 10% of each pool, chosen by a hash independent of the train/test
 // and calibration splits. The loop never reads these files; only Joe or a
 // manual run checks them.
-func FinalHoldout(id string) bool {
-	h := sha256.Sum256([]byte("final-holdout:" + split.Base(id)))
-	return binary.BigEndian.Uint32(h[:4])%10 == 0
-}
+func FinalHoldout(id string) bool { return split.FinalHoldout(id) }
 
 // Trainable reports whether a training-corpus sample may be used for
 // training: it must be train split. (Test-split files are frozen.)
