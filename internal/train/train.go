@@ -67,7 +67,7 @@ type FitOptions struct {
 
 // ExperimentalFeatures are detector signals not yet adopted in shipped models:
 // fits drop them unless explicitly enabled.
-var ExperimentalFeatures = []string{"prose_burstiness", "clause_uniformity"}
+var ExperimentalFeatures = []string{"prose_burstiness", "clause_uniformity", "pr_section_count", "pr_checklist"}
 
 // ReleaseFitOptions returns the release fit defaults (matching
 // overnight.ReleaseFitOptions and overnight.RetrainCandidate): source
