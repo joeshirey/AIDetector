@@ -310,14 +310,25 @@ bin/corpus harvest -pool -out corpus_tech -kind blog -source seroter -exclude co
 bin/corpus promote -out corpus_tech -kind blog -n 300 -hard 0 -prefix seroter-
 bin/corpus mirror -out corpus_tech -kind blog -j 12
 
-bin/aidetector fit -kind prose corpus/blog corpus/memo corpus/essay corpus_tech/blog
-bin/aidetector fit -kind pr corpus/pr
-go build -o bin/aidetector ./cmd/aidetector   # embeds the new models
+# fit a candidate into a scratch directory (never directly into internal/engine/models)
+OUT=$(mktemp -d)
+bin/aidetector fit -kind prose -out "$OUT" corpus/blog corpus/memo corpus/essay corpus_tech/blog
+bin/aidetector fit -kind pr -out "$OUT" corpus/pr
+# add -exclude-since <RFC3339> to leave out AI mirrors generated after a timestamp
 
-# set label cutoffs on fresh human text the models haven't seen
+# set label cutoffs on the calibration half of the fresh pools (the 10% final holdout is left out)
 bin/corpus harvest -pool -out corpus_fresh -exclude corpus
-bin/aidetector thresholds -kind prose -only documents corpus_fresh/blog/pool corpus_fresh/memo/pool corpus_fresh/essay/pool
-bin/aidetector thresholds -kind prose -only segments corpus_fresh/blog/pool corpus_fresh/memo/pool corpus_fresh/essay/pool corpus_tech/blog/pool corpus_nontech/blog/pool
+bin/aidetector thresholds -kind pr -only documents -out "$OUT" corpus_fresh/pr/pool corpus_prpool/pr/pool
+bin/aidetector thresholds -kind prose -only documents -out "$OUT" corpus_fresh/blog/pool corpus_fresh/memo/pool corpus_fresh/essay/pool
+bin/aidetector thresholds -kind prose -only segments -out "$OUT" corpus_fresh/blog/pool corpus_fresh/memo/pool corpus_fresh/essay/pool corpus_tech/blog/pool corpus_nontech/blog/pool
+
+# or run the full reproducible rebuild + gate in one step (overnight.RetrainCandidate + CalibrateCutoffs):
+bin/corpus overnight gate -name exp/rebuild -weighting source+balance-generator -sign-constrain -align-norm -short-prose 150:350
+# or gate the scratch directory built above without refitting:
+bin/corpus overnight gate -candidate "$OUT"
+
+# promoting a candidate into internal/engine/models/ is a manual copy after gating + holdout check,
+# followed by rebuilding the binary and running the fixture check:
 go build -o bin/aidetector ./cmd/aidetector
 bin/aidetector fixtures      # regression check: known-human fixtures plus a report-only monitoring set
 
@@ -604,7 +615,7 @@ script's docstring has more).
 ```sh
 uv run scorer/server.py --observer mlx-community/Qwen3-8B-Base-bf16 --performer mlx-community/Qwen3-8B-bf16
 export AIDETECTOR_SCORER_URL=http://127.0.0.1:8765
-bin/aidetector fit -lm -kind prose corpus/blog corpus/memo corpus/essay   # writes prose.lm.json
+bin/aidetector fit -lm -kind prose -out "$OUT" corpus/blog corpus/memo corpus/essay   # writes prose.lm.json
 ```
 
 ## Layout

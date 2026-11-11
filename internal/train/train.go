@@ -5,6 +5,8 @@ package train
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -63,6 +65,51 @@ type FitOptions struct {
 	// ngram.TrainOptions). At the default strength it cut recall by about 1.5
 	// points on 2026-10-29, so it stays off until the strength is retuned.
 	DenseL2 bool
+}
+
+// ExperimentalFeatures are detector signals not yet adopted in shipped models:
+// fits drop them unless explicitly enabled.
+var ExperimentalFeatures = []string{"prose_burstiness", "clause_uniformity"}
+
+// ReleaseFitOptions returns the release fit defaults (matching
+// overnight.ReleaseFitOptions and overnight.RetrainCandidate): source
+// weighting with generator balancing, sign-constrained weights, experimental
+// features dropped, and engine.json loaded from outDir if present or else from
+// the embedded production models.
+func ReleaseFitOptions(outDir string) (FitOptions, error) {
+	drop := make(map[string]bool, len(ExperimentalFeatures))
+	for _, f := range ExperimentalFeatures {
+		drop[f] = true
+	}
+	o := FitOptions{
+		Weighting:     "source+balance-generator",
+		SignConstrain: true,
+		Drop:          drop,
+	}
+	if outDir != "" {
+		if b, err := os.ReadFile(filepath.Join(outDir, "engine.json")); err == nil {
+			if err := json.Unmarshal(b, &o.Engine); err != nil {
+				return o, fmt.Errorf("engine.json in %s: %w", outDir, err)
+			}
+			return o, nil
+		} else if !os.IsNotExist(err) {
+			return o, err
+		}
+	}
+	if b, err := engine.EmbeddedFile("engine.json"); err == nil {
+		if err := json.Unmarshal(b, &o.Engine); err != nil {
+			return o, fmt.Errorf("embedded engine.json: %w", err)
+		}
+	}
+	return o, nil
+}
+
+// FinalHoldout reports whether a fresh-pool text belongs to the 10% final
+// holdout (matching overnight.FinalHoldout). Cutoff calibration leaves these
+// files out so the final holdout stays untouched.
+func FinalHoldout(id string) bool {
+	h := sha256.Sum256([]byte("final-holdout:" + split.Base(id)))
+	return binary.BigEndian.Uint32(h[:4])%10 == 0
 }
 
 // FitWith fits a kind's word-pattern model and calibrated model.
