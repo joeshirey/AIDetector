@@ -3,6 +3,7 @@ package split
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"hash/fnv"
 	"strings"
 )
@@ -34,6 +35,14 @@ func Hash(id string) uint32 {
 func Calib(id string) bool {
 	h := sha256.Sum256([]byte("calib:" + Base(id)))
 	return h[0]&1 == 0
+}
+
+// FinalHoldout reports whether a fresh-pool text belongs to the final
+// holdout: 10% of each pool, chosen by a SHA-256 hash independent of the
+// train/test and calibration splits.
+func FinalHoldout(id string) bool {
+	h := sha256.Sum256([]byte("final-holdout:" + Base(id)))
+	return binary.BigEndian.Uint32(h[:4])%10 == 0
 }
 
 // Base strips a "~variant" suffix from a sample id.

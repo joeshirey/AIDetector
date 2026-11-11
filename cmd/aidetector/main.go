@@ -2,9 +2,9 @@
 //
 //	aidetector [detect] [-kind K] [-json] [file|-]
 //	aidetector eval [-kind K] [-split train|test] [-heuristic] [-json] DIR...
-//	aidetector fit  -kind K DIR...
+//	aidetector fit  -kind K -out DIR DIR...
 //	aidetector dist [-kind K] DIR...   score distribution of a folder (e.g. the human pool)
-//	aidetector thresholds -kind K DIR...  set label cutoffs from human-only text
+//	aidetector thresholds -kind K -out DIR DIR...  set label cutoffs from human-only text
 //	aidetector setup [-client all|claude|codex|antigravity] [-dry-run]  register the MCP server and install the skill
 //	aidetector fixtures [-fetch-only]  fetch and score the regression fixtures (run after every refit)
 package main
@@ -12,6 +12,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"slices"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/joeshirey/AIDetector/internal/detect"
 	"github.com/joeshirey/AIDetector/internal/engine"
@@ -72,9 +74,9 @@ func usage() {
   aidetector fixtures [-fetch-only]   fetch (cached, gitignored) and score the regression fixtures
   aidetector [detect] [-kind auto|prose|pr] [-json] [file|-]
   aidetector eval [-kind K] [-split train|test] [-heuristic] [-json] DIR...   (DIR/human/*, DIR/ai/*)
-  aidetector fit -kind prose|pr DIR...   (writes internal/engine/models/KIND.json)
+  aidetector fit -kind prose|pr -out OUT_DIR [-exclude-since RFC3339] DIR...
   aidetector dist [-kind K] DIR...   score distribution for every .txt under DIR (pool false-positive rate, variant sets)
-  aidetector thresholds -kind K DIR...   set label cutoffs from human-only text (writes internal/engine/models/thresholds.json)
+  aidetector thresholds -kind K -out OUT_DIR [-only documents|segments|both] DIR...
 `)
 }
 
@@ -170,17 +172,92 @@ func runEval(args []string) error {
 func runFit(args []string) error {
 	fs := flag.NewFlagSet("fit", flag.ExitOnError)
 	kind := fs.String("kind", "", "prose or pr")
-	out := fs.String("out", "internal/engine/models", "output directory")
+	out := fs.String("out", "", "output directory (required; use a scratch directory, never internal/engine/models)")
 	withLM := fs.Bool("lm", false, "include token-probability features from the local scorer; writes KIND.lm.json")
+	weighting := fs.String("weighting", "source+balance-generator", "sample weighting: \"\", source, or family (optionally with +balance-generator or +balance-family)")
+	signConstrain := fs.Bool("sign-constrain", true, "keep hand-built feature weights on the side their medians point")
+	enableFeatures := fs.String("enable-features", "", "experimental features to include, comma-separated (prose_burstiness, clause_uniformity)")
+	alignNorm := fs.Bool("align-norm", false, "override engine.json align_normalization")
+	shortProse := fs.String("short-prose", "", "override engine.json short_prose cutoffs, BELOW:ABOVE words (e.g. 150:350 or 0:0)")
+	fwTrigrams := fs.Bool("fw-trigrams", false, "add function-word trigrams to the word-pattern model")
+	denseL2 := fs.Bool("dense-l2", false, "fit with experimental dense word-pattern regularization")
+	excludeSince := fs.String("exclude-since", "", "leave AI generations modified after this RFC 3339 timestamp out of training")
 	fs.Parse(args)
+	if *out == "" {
+		return errors.New("fit: -out is required (write to a scratch directory; never overwrite internal/engine/models by default)")
+	}
 	k := detect.ParseKind(*kind)
 	if k == detect.KindAuto || fs.NArg() == 0 {
 		usage()
 		os.Exit(2)
 	}
-	r, err := train.Fit(context.Background(), k, fs.Args(), *out, *withLM, nil)
+	o, err := train.ReleaseFitOptions(*out)
 	if err != nil {
 		return err
+	}
+	o.WithLM = *withLM
+	o.Weighting = *weighting
+	o.SignConstrain = *signConstrain
+	o.FWTrigrams = *fwTrigrams
+	o.DenseL2 = *denseL2
+	if *enableFeatures != "" {
+		for _, f := range strings.Split(*enableFeatures, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				delete(o.Drop, f)
+			}
+		}
+	}
+	visited := map[string]bool{}
+	fs.Visit(func(fl *flag.Flag) { visited[fl.Name] = true })
+	engineOverridden := false
+	if visited["align-norm"] {
+		o.Engine.AlignNormalization = *alignNorm
+		engineOverridden = true
+	}
+	if visited["short-prose"] {
+		if _, err := fmt.Sscanf(*shortProse, "%d:%d", &o.Engine.ShortProse.Below, &o.Engine.ShortProse.Above); err != nil {
+			return fmt.Errorf("-short-prose %q: want BELOW:ABOVE", *shortProse)
+		}
+		engineOverridden = true
+	}
+	var since time.Time
+	hasSince := *excludeSince != ""
+	if hasSince {
+		since, err = time.Parse(time.RFC3339, *excludeSince)
+		if err != nil {
+			return fmt.Errorf("-exclude-since: %w", err)
+		}
+	}
+	o.Keep = func(path, id string) bool {
+		if split.Of(id) != "train" {
+			return false
+		}
+		if hasSince && strings.Contains("/"+filepath.ToSlash(path), "/ai/") {
+			if st, err := os.Stat(path); err == nil && st.ModTime().After(since) {
+				return false
+			}
+		}
+		return true
+	}
+	r, err := train.FitWith(context.Background(), k, fs.Args(), *out, o)
+	if err != nil {
+		return err
+	}
+	enginePath := filepath.Join(*out, "engine.json")
+	if engineOverridden {
+		b, err := json.MarshalIndent(o.Engine, "", " ")
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(enginePath, b, 0o644); err != nil {
+			return err
+		}
+	} else if _, err := os.Stat(enginePath); os.IsNotExist(err) {
+		if b, err := engine.EmbeddedFile("engine.json"); err == nil {
+			if err := os.WriteFile(enginePath, b, 0o644); err != nil {
+				return err
+			}
+		}
 	}
 	fmt.Printf("word-pattern model: %d terms\n", len(r.Words.Weights))
 	fmt.Printf("fit %s on %d train samples (%d human, %d ai) -> %s\n", k, r.Human+r.AI, r.Human, r.AI, r.ModelPath)
@@ -320,19 +397,37 @@ func scoreFiles(e *engine.Engine, dirs []string, kind detect.Kind) ([]scored, er
 func runThresholds(args []string) error {
 	fs := flag.NewFlagSet("thresholds", flag.ExitOnError)
 	kind := fs.String("kind", "", "prose or pr")
-	out := fs.String("out", "internal/engine/models/thresholds.json", "thresholds file to update")
+	out := fs.String("out", "", "model directory (writes OUT/thresholds.json) or thresholds.json path (required)")
+	excludeHoldout := fs.Bool("exclude-holdout", true, "leave the 10% final holdout out of cutoff calibration")
 	o := train.DefaultThresholdOptions()
 	fs.Float64Var(&o.Mixed, "mixed", o.Mixed, "share of human text allowed at or above the inconclusive cutoff")
 	fs.Float64Var(&o.Likely, "likely", o.Likely, "share of human text allowed at or above the likely-AI cutoff")
 	fs.Float64Var(&o.AI, "ai", o.AI, "share of human text allowed at or above the AI cutoff")
 	fs.StringVar(&o.Only, "only", o.Only, "calibrate documents, segments, or both (segments need far more text, so they can use a wider pool)")
 	fs.Parse(args)
+	if *out == "" {
+		return errors.New("thresholds: -out is required (write to a scratch directory; never overwrite internal/engine/models by default)")
+	}
 	k := detect.ParseKind(*kind)
 	if k == detect.KindAuto || fs.NArg() == 0 {
 		usage()
 		os.Exit(2)
 	}
-	r, err := train.Thresholds(context.Background(), engine.Default(), k, fs.Args(), *out, o, nil)
+	modelDir, thresholdsPath := *out, filepath.Join(*out, "thresholds.json")
+	if strings.HasSuffix(strings.ToLower(*out), ".json") {
+		modelDir, thresholdsPath = filepath.Dir(*out), *out
+	}
+	e := engine.Default()
+	if st, err := os.Stat(modelDir); err == nil && st.IsDir() {
+		if e, err = engine.FromDir(modelDir); err != nil {
+			return err
+		}
+	}
+	var keep eval.Keep
+	if *excludeHoldout {
+		keep = func(_, id string) bool { return !train.FinalHoldout(id) }
+	}
+	r, err := train.Thresholds(context.Background(), e, k, fs.Args(), thresholdsPath, o, keep)
 	if err != nil {
 		return err
 	}

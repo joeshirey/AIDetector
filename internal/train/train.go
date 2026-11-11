@@ -65,6 +65,48 @@ type FitOptions struct {
 	DenseL2 bool
 }
 
+// ExperimentalFeatures are detector signals not yet adopted in shipped models:
+// fits drop them unless explicitly enabled.
+var ExperimentalFeatures = []string{"prose_burstiness", "clause_uniformity"}
+
+// ReleaseFitOptions returns the release fit defaults (matching
+// overnight.ReleaseFitOptions and overnight.RetrainCandidate): source
+// weighting with generator balancing, sign-constrained weights, experimental
+// features dropped, and engine.json loaded from outDir if present or else from
+// the embedded production models.
+func ReleaseFitOptions(outDir string) (FitOptions, error) {
+	drop := make(map[string]bool, len(ExperimentalFeatures))
+	for _, f := range ExperimentalFeatures {
+		drop[f] = true
+	}
+	o := FitOptions{
+		Weighting:     "source+balance-generator",
+		SignConstrain: true,
+		Drop:          drop,
+	}
+	if outDir != "" {
+		if b, err := os.ReadFile(filepath.Join(outDir, "engine.json")); err == nil {
+			if err := json.Unmarshal(b, &o.Engine); err != nil {
+				return o, fmt.Errorf("engine.json in %s: %w", outDir, err)
+			}
+			return o, nil
+		} else if !os.IsNotExist(err) {
+			return o, err
+		}
+	}
+	if b, err := engine.EmbeddedFile("engine.json"); err == nil {
+		if err := json.Unmarshal(b, &o.Engine); err != nil {
+			return o, fmt.Errorf("embedded engine.json: %w", err)
+		}
+	}
+	return o, nil
+}
+
+// FinalHoldout reports whether a fresh-pool text belongs to the 10% final
+// holdout (see split.FinalHoldout). Cutoff calibration leaves these files
+// out so the final holdout stays untouched.
+func FinalHoldout(id string) bool { return split.FinalHoldout(id) }
+
 // FitWith fits a kind's word-pattern model and calibrated model.
 func FitWith(ctx context.Context, kind detect.Kind, dirs []string, outDir string, o FitOptions) (*FitResult, error) {
 	keep, withLM := o.Keep, o.WithLM
