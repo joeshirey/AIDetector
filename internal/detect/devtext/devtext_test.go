@@ -130,8 +130,8 @@ Avoid startup crash on empty file.
 		t.Errorf("full template AIProb/Weight = %v/%v, want 0.85/1.2", gotFull.AIProb, gotFull.Weight)
 	}
 
-	if got := fullTesting["agent_pr_template"]; got.Value != 3 {
-		t.Errorf("Summary + Testing + checklist agent_pr_template.Value = %v, want 3", got.Value)
+	if got := fullTesting["agent_pr_template"]; got.Value != 3 || got.AIProb != 0.65 || got.Weight != 0.6 {
+		t.Errorf("Summary + Testing + checklist agent_pr_template = %+v, want Value=3 AIProb=0.65 Weight=0.6", got)
 	}
 
 	for _, tc := range []struct {
@@ -152,6 +152,10 @@ Avoid startup crash on empty file.
 		}
 		if s.Value != tc.want {
 			t.Errorf("%s: agent_pr_template.Value = %v, want %v", tc.label, s.Value, tc.want)
+		}
+		if s.AIProb != 0.65 || s.Weight != 0.6 {
+			t.Errorf("%s: agent_pr_template AIProb/Weight = %v/%v, want 0.65/0.6 for heuristic invariance",
+				tc.label, s.AIProb, s.Weight)
 		}
 		if !(gotFull.Value > s.Value) {
 			t.Errorf("monotonicity violated for %s: Summary+Test plan+checklist Value (%v) must exceed %v",

@@ -235,7 +235,7 @@ func ReleaseFitOptions() FitOptions {
 
 // ExperimentalFeatures are detector signals not yet adopted: fits leave
 // them out unless FitOptions.EnableFeatures names them.
-var ExperimentalFeatures = []string{"prose_burstiness", "clause_uniformity"}
+var ExperimentalFeatures = []string{"prose_burstiness", "clause_uniformity", "pr_section_count", "pr_checklist"}
 
 // RetrainCandidate fits prose and PR models into dir from train-split
 // files and recalibrates the cutoffs with CalibrateCutoffs.

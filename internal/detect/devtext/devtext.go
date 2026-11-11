@@ -67,14 +67,17 @@ func prSignals(t string) []detect.Signal {
 	// expected by shipped models.
 	if hasAgentTemplate || sections >= 2 {
 		switch {
-		case hasAgentTemplate || (hasSummaryAndTest && checks > 0):
+		case hasAgentTemplate:
 			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 3, AIProb: 0.85, Weight: 1.2,
 				Detail: "Summary + Test plan sections with a checklist (common coding-agent template)"})
+		case hasSummaryAndTest && checks > 0:
+			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 3, AIProb: 0.65, Weight: 0.6,
+				Detail: "Summary + Testing sections with a checklist"})
 		case hasSummaryAndTest:
-			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 2, AIProb: 0.75, Weight: 0.9,
+			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 2, AIProb: 0.65, Weight: 0.6,
 				Detail: "Summary + Test plan/Testing section headings"})
 		case checks > 0:
-			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 2, AIProb: 0.75, Weight: 0.9,
+			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 2, AIProb: 0.65, Weight: 0.6,
 				Detail: fmt.Sprintf("%d templated section headings with a checklist", sections)})
 		default:
 			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 1, AIProb: 0.65, Weight: 0.6,
