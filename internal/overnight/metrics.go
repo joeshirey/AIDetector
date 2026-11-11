@@ -226,16 +226,13 @@ type FitOptions struct {
 // production's engine options (engine.json), so loop candidates differ from
 // production only in their data.
 func ReleaseFitOptions() FitOptions {
-	o := FitOptions{Weighting: "source+balance-generator", SignConstrain: true}
-	if b, err := engine.EmbeddedFile("engine.json"); err == nil {
-		json.Unmarshal(b, &o.Engine)
-	}
-	return o
+	t, _ := train.ReleaseFitOptions("")
+	return FitOptions{Weighting: t.Weighting, SignConstrain: t.SignConstrain, Engine: t.Engine}
 }
 
 // ExperimentalFeatures are detector signals not yet adopted: fits leave
 // them out unless FitOptions.EnableFeatures names them.
-var ExperimentalFeatures = []string{"prose_burstiness", "clause_uniformity"}
+var ExperimentalFeatures = train.ExperimentalFeatures
 
 // RetrainCandidate fits prose and PR models into dir from train-split
 // files and recalibrates the cutoffs with CalibrateCutoffs.
