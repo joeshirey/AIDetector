@@ -27,10 +27,12 @@ var (
 		`|generated (with|by) \[?(claude|copilot|chatgpt|cursor|codex|gemini)` +
 		`|🤖 generated with`)
 
-	prSectionRE = regexp.MustCompile(`(?mi)^#{1,3}\s*(summary|changes|what changed|test plan|testing|motivation|key changes|overview)\b`)
-	checkboxRE  = regexp.MustCompile(`(?m)^[ \t]*[-*]\s+\[[ xX]\]\s`)
-	bulletRE    = regexp.MustCompile(`(?m)^[ \t]*[-*]\s+(.+)$`)
-	emojiHeadRE = regexp.MustCompile(`(?m)^#{1,3}\s*[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]`)
+	prSectionRE   = regexp.MustCompile(`(?mi)^#{1,3}\s*(summary|changes|what changed|test plan|testing|motivation|key changes|overview)\b`)
+	summaryHeadRE = regexp.MustCompile(`(?mi)^#{1,3}\s*summary\b`)
+	testHeadRE    = regexp.MustCompile(`(?mi)^#{1,3}\s*(test plan|testing)\b`)
+	checkboxRE    = regexp.MustCompile(`(?m)^[ \t]*[-*]\s+\[[ xX]\]\s`)
+	bulletRE      = regexp.MustCompile(`(?m)^[ \t]*[-*]\s+(.+)$`)
+	emojiHeadRE   = regexp.MustCompile(`(?m)^#{1,3}\s*[\x{1F300}-\x{1FAFF}\x{2600}-\x{27BF}]`)
 )
 
 func (*Detector) Detect(_ context.Context, in detect.Input) ([]detect.Signal, error) {
@@ -56,17 +58,35 @@ func prSignals(t string) []detect.Signal {
 	sections := len(prSectionRE.FindAllString(t, -1))
 	checks := len(checkboxRE.FindAllString(t, -1))
 	lower := strings.ToLower(t)
+	hasAgentTemplate := strings.Contains(lower, "summary") && strings.Contains(lower, "test plan") && checks > 0
+	hasSummaryAndTest := summaryHeadRE.MatchString(t) && testHeadRE.MatchString(t)
 	// "## Summary" + "## Test plan" with a checklist is the house style of
 	// several coding agents. Human PRs following a repo template look similar,
-	// so this is evidence, not proof.
-	switch {
-	case strings.Contains(lower, "summary") && strings.Contains(lower, "test plan") && checks > 0:
-		out = append(out, detect.Signal{Name: "agent_pr_template", Value: 1, AIProb: 0.85, Weight: 1.2,
-			Detail: "Summary + Test plan sections with a checklist (common coding-agent template)"})
-	case sections >= 2:
-		out = append(out, detect.Signal{Name: "agent_pr_template", Value: float64(sections), AIProb: 0.65, Weight: 0.6,
-			Detail: fmt.Sprintf("%d templated section headings", sections)})
+	// so this is evidence, not proof. Values increase monotonically with
+	// template specificity while preserving the exact Present/Missing boundary
+	// expected by shipped models.
+	if hasAgentTemplate || sections >= 2 {
+		switch {
+		case hasAgentTemplate || (hasSummaryAndTest && checks > 0):
+			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 3, AIProb: 0.85, Weight: 1.2,
+				Detail: "Summary + Test plan sections with a checklist (common coding-agent template)"})
+		case hasSummaryAndTest:
+			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 2, AIProb: 0.75, Weight: 0.9,
+				Detail: "Summary + Test plan/Testing section headings"})
+		case checks > 0:
+			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 2, AIProb: 0.75, Weight: 0.9,
+				Detail: fmt.Sprintf("%d templated section headings with a checklist", sections)})
+		default:
+			out = append(out, detect.Signal{Name: "agent_pr_template", Value: 1, AIProb: 0.65, Weight: 0.6,
+				Detail: fmt.Sprintf("%d templated section headings", sections)})
+		}
 	}
+	out = append(out,
+		detect.Signal{Name: "pr_section_count", Value: float64(sections), AIProb: 0.5, Weight: 0,
+			Detail: fmt.Sprintf("%d templated section headings", sections)},
+		detect.Signal{Name: "pr_checklist", Value: float64(checks), AIProb: 0.5, Weight: 0,
+			Detail: fmt.Sprintf("%d checklist items", checks)},
+	)
 	if emojiHeadRE.MatchString(t) {
 		out = append(out, detect.Signal{Name: "emoji_headings", Value: 1, AIProb: 0.8, Weight: 0.7,
 			Detail: "section headings start with emoji"})
