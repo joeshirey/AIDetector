@@ -46,3 +46,6 @@ __pycache__/
 /excluded/
 /corpus_prpool/
 /corpus_modern/
+
+# Local agent coordinator state (not part of the project)
+/.agents/
