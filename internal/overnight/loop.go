@@ -725,9 +725,11 @@ func countTraining(d Data) int {
 	n := 0
 	for _, g := range Genres {
 		filepath.WalkDir(d.Dir(g), func(p string, de os.DirEntry, err error) error {
-			if err == nil && !de.IsDir() && strings.HasSuffix(p, ".txt") && Trainable(strings.TrimSuffix(filepath.Base(p), ".txt")) &&
-				(strings.Contains(p, "/human/") || strings.Contains(p, "/ai/")) {
-				n++
+			if err == nil && !de.IsDir() && strings.HasSuffix(p, ".txt") && Trainable(strings.TrimSuffix(filepath.Base(p), ".txt")) {
+				s := filepath.ToSlash(p)
+				if strings.Contains(s, "/human/") || strings.Contains(s, "/ai/") {
+					n++
+				}
 			}
 			return nil
 		})
