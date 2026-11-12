@@ -89,6 +89,10 @@ func NightOf(t time.Time) time.Time {
 func (b *Budget) OpenLedger(path string) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.ledger != nil {
+		_ = b.ledger.Close()
+		b.ledger = nil
+	}
 	if f, err := os.Open(path); err == nil {
 		night := b.Night.Format("2006-01-02")
 		sc := bufio.NewScanner(f)
@@ -111,6 +115,18 @@ func (b *Budget) OpenLedger(path string) error {
 	}
 	b.ledger = f
 	return nil
+}
+
+// Close closes the open ledger file, if any.
+func (b *Budget) Close() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.ledger == nil {
+		return nil
+	}
+	err := b.ledger.Close()
+	b.ledger = nil
+	return err
 }
 
 // Cost prices a call without recording it.

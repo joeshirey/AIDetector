@@ -280,10 +280,10 @@ func TestSpendForCountsBatchRequests(t *testing.T) {
 func TestEditsStayOutOfTraining(t *testing.T) {
 	d := Data{Root: "/data"}
 	g, _ := GenreByName("blog")
-	if p := d.OutputPath(g, "m", "x", StyleEdit); !strings.Contains(p, "/ai_edited/") {
+	if p := filepath.ToSlash(d.OutputPath(g, "m", "x", StyleEdit)); !strings.Contains(p, "/ai_edited/") {
 		t.Errorf("edit output %s should be outside ai/", p)
 	}
-	if p := d.OutputPath(g, "m", "x", StylePlain); !strings.Contains(p, "/ai/") {
+	if p := filepath.ToSlash(d.OutputPath(g, "m", "x", StylePlain)); !strings.Contains(p, "/ai/") {
 		t.Errorf("plain output %s should be in ai/", p)
 	}
 	p := &Planner{Sources: map[string]map[int][]Source{"blog": {0: {{}}}}}
@@ -291,5 +291,53 @@ func TestEditsStayOutOfTraining(t *testing.T) {
 		if c.Style == StyleEdit {
 			t.Fatal("planner offered an edit cell")
 		}
+	}
+}
+
+func TestCountTraining(t *testing.T) {
+	d := Data{Root: t.TempDir()}
+	if got := countTraining(d); got != 0 {
+		t.Fatalf("empty countTraining = %d, want 0", got)
+	}
+	for _, id := range []string{"doc-1", "doc-2", "doc-3"} {
+		if !Trainable(id) {
+			t.Fatalf("fixture %s must be train split", id)
+		}
+	}
+	if Trainable("doc-4") {
+		t.Fatal("fixture doc-4 must be test split")
+	}
+
+	write := func(p string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("sample text\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	blog, _ := GenreByName("blog")
+	techblog, _ := GenreByName("techblog")
+	pr, _ := GenreByName("pr")
+
+	// Counted: 4 train-split .txt files under human/ and ai/ across genres.
+	write(filepath.Join(d.Dir(blog), "human", "doc-1.txt"))
+	write(d.OutputPath(blog, "m", "doc-1", StylePlain))
+	write(d.OutputPath(techblog, "m", "doc-2", StylePersona))
+	write(filepath.Join(d.Dir(pr), "human", "doc-3.txt"))
+
+	// Excluded: eval-only sets, unpromoted pool, test-split files, and non-.txt metadata.
+	write(d.OutputPath(blog, "m", "doc-1", StyleEdit))
+	write(filepath.Join(d.Dir(blog), "ai_polished", "m", "doc-1.txt"))
+	write(filepath.Join(d.Dir(blog), "ai_humanized", "m", "doc-1.txt"))
+	write(filepath.Join(d.Dir(blog), "pool", "doc-1.txt"))
+	write(filepath.Join(d.Dir(blog), "human", "doc-4.txt"))
+	write(d.OutputPath(blog, "m", "doc-4", StylePlain))
+	write(filepath.Join(d.Dir(blog), "human", "doc-1.json"))
+
+	if got := countTraining(d); got != 4 {
+		t.Fatalf("countTraining = %d, want 4", got)
 	}
 }

@@ -59,12 +59,17 @@ func TestCostRules(t *testing.T) {
 }
 
 func TestModelCapAndLedgerRestore(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "ledger.jsonl")
+	if err := testBudget(100).Close(); err != nil {
+		t.Fatalf("Close without ledger: %v", err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ledger.jsonl")
 	b := testBudget(100)
 	b.ModelCaps = map[string]float64{"m": 1}
 	if err := b.OpenLedger(path); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = b.Close() })
 	b.Record(Entry{Provider: "p", Model: "m", Mode: ModeOnline, Usage: Usage{Output: 40_000}}) // $1.20
 	if err := b.Check("m"); !errors.Is(err, ErrBudget) {
 		t.Fatalf("model cap not enforced: %v", err)
@@ -72,16 +77,27 @@ func TestModelCapAndLedgerRestore(t *testing.T) {
 	if b.Check("other") != nil {
 		t.Error("cap on m shouldn't block other models")
 	}
+	if err := b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
 	// A restart in the same night restores the spend from the ledger.
 	b2 := testBudget(100)
 	b2.ModelCaps = map[string]float64{"m": 1}
 	if err := b2.OpenLedger(path); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = b2.Close() })
 	if b2.Check("m") == nil {
 		t.Error("restored budget forgot tonight's spend")
 	}
 	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	// Reopening onto a second path closes the previous handle so TempDir cleanup succeeds on Windows.
+	if err := b2.OpenLedger(filepath.Join(dir, "ledger2.jsonl")); err != nil {
 		t.Fatal(err)
 	}
 }
