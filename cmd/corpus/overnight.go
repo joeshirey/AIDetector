@@ -18,6 +18,7 @@ import (
 	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/fixtures"
 	"github.com/joeshirey/AIDetector/internal/overnight"
+	"github.com/joeshirey/AIDetector/internal/split"
 )
 
 const overnightUsage = `corpus overnight: the unattended improvement loop (see README, "Overnight loop")
@@ -322,7 +323,6 @@ func runOvernight(ctx context.Context, args []string) error {
 		dir := filepath.Join(abs(*runRoot), *outName)
 		start = time.Now()
 		var rules []func(path, id string) bool
-		sep := string(filepath.Separator)
 		newerThan := func(path string, t time.Time) bool {
 			st, err := os.Stat(path)
 			return err == nil && st.ModTime().After(t)
@@ -333,8 +333,8 @@ func runOvernight(ctx context.Context, args []string) error {
 				return fmt.Errorf("-exclude-since: %w", err)
 			}
 			rules = append(rules, func(path, id string) bool {
-				i := strings.Index(path, sep+"ai"+sep)
-				return i >= 0 && strings.HasPrefix(path[i+4:], *excludeGen) && newerThan(path, since)
+				role, g := split.PathRole(path)
+				return role == "ai" && strings.HasPrefix(g, *excludeGen) && newerThan(path, since)
 			})
 		}
 		if *excludeHumanSince != "" {
@@ -343,7 +343,8 @@ func runOvernight(ctx context.Context, args []string) error {
 				return fmt.Errorf("-exclude-human-since: %w", err)
 			}
 			rules = append(rules, func(path, id string) bool {
-				return strings.Contains(path, sep+"human"+sep) && newerThan(path, since)
+				role, _ := split.PathRole(path)
+				return role == "human" && newerThan(path, since)
 			})
 		}
 		if *excludeStyle != "" {
@@ -366,7 +367,7 @@ func runOvernight(ctx context.Context, args []string) error {
 				return fmt.Errorf("-subsample %q: %w", *subsample, ferr)
 			}
 			rules = append(rules, func(path, id string) bool {
-				if !strings.Contains(path, sep+"ai"+sep+gen+sep) {
+				if role, g := split.PathRole(path); role != "ai" || g != gen {
 					return false
 				}
 				h := fnv.New32a()
@@ -377,7 +378,7 @@ func runOvernight(ctx context.Context, args []string) error {
 		if *excludeGenStyle != "" {
 			gen, styles, _ := strings.Cut(*excludeGenStyle, ":")
 			rules = append(rules, func(path, id string) bool {
-				if !strings.Contains(path, sep+"ai"+sep+gen+sep) {
+				if role, g := split.PathRole(path); role != "ai" || g != gen {
 					return false
 				}
 				for _, st := range strings.Split(styles, ",") {

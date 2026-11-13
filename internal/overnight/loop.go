@@ -19,6 +19,7 @@ import (
 	"github.com/joeshirey/AIDetector/internal/detect"
 	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/fixtures"
+	"github.com/joeshirey/AIDetector/internal/split"
 )
 
 // Paid generators and their base shares of the paid sample budget. Argon
@@ -724,15 +725,16 @@ func (l *Loop) retrain(ctx context.Context, n int) Round {
 func countTraining(d Data) int {
 	n := 0
 	for _, g := range Genres {
-		filepath.WalkDir(d.Dir(g), func(p string, de os.DirEntry, err error) error {
-			if err == nil && !de.IsDir() && strings.HasSuffix(p, ".txt") && Trainable(strings.TrimSuffix(filepath.Base(p), ".txt")) {
-				s := filepath.ToSlash(p)
-				if strings.Contains(s, "/human/") || strings.Contains(s, "/ai/") {
-					n++
+		for _, sub := range []string{"human", "ai"} {
+			filepath.WalkDir(filepath.Join(d.Dir(g), sub), func(p string, de os.DirEntry, err error) error {
+				if err == nil && !de.IsDir() && strings.HasSuffix(p, ".txt") && Trainable(strings.TrimSuffix(filepath.Base(p), ".txt")) {
+					if role, _ := split.PathRole(p); role == sub {
+						n++
+					}
 				}
-			}
-			return nil
-		})
+				return nil
+			})
+		}
 	}
 	return n
 }

@@ -354,7 +354,8 @@ func LeaveOneFamilyOut(ctx context.Context, d Data, prod *engine.Engine, dir str
 }
 
 func isAIPath(path string) bool {
-	return strings.Contains(path, string(filepath.Separator)+"ai"+string(filepath.Separator))
+	role, _ := split.PathRole(path)
+	return role == "ai"
 }
 
 // Flips lists, per fresh pool, the human texts (final holdout excluded)

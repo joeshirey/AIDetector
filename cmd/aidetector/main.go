@@ -21,6 +21,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -96,7 +97,7 @@ func usage() {
 	fmt.Fprint(os.Stderr, `usage:
   aidetector setup [-client all|claude|codex|antigravity] [-dry-run] [-skill-only] [-scorer URL]
   aidetector fixtures [-fetch-only]   fetch (cached, gitignored) and score the regression fixtures
-  aidetector [detect] [-kind auto|prose|pr] [-json] [file|-]
+  aidetector [detect] [-kind auto|prose|pr] [-json] [file|-]   (use "aidetector detect version" for a file named version)
   aidetector -version | version       print build version and loaded-models digest
   aidetector eval [-kind K] [-split train|test] [-heuristic] [-json] DIR...   (DIR/human/*, DIR/ai/*)
   aidetector fit -kind prose|pr -out OUT_DIR [-exclude-since RFC3339] DIR...
@@ -194,6 +195,21 @@ func runEval(args []string) error {
 	return nil
 }
 
+// optBoolFlag is a boolean flag whose default comes from engine.json rather
+// than a fixed true/false literal, so flag.PrintDefaults omits "(default false)".
+type optBoolFlag struct{ val bool }
+
+func (f *optBoolFlag) String() string   { return "" }
+func (f *optBoolFlag) IsBoolFlag() bool { return true }
+func (f *optBoolFlag) Set(s string) error {
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return err
+	}
+	f.val = v
+	return nil
+}
+
 func runFit(args []string) error {
 	fs := flag.NewFlagSet("fit", flag.ExitOnError)
 	kind := fs.String("kind", "", "prose or pr")
@@ -202,7 +218,8 @@ func runFit(args []string) error {
 	weighting := fs.String("weighting", "source+balance-generator", "sample weighting: \"\", source, or family (optionally with +balance-generator or +balance-family)")
 	signConstrain := fs.Bool("sign-constrain", true, "keep hand-built feature weights on the side their medians point")
 	enableFeatures := fs.String("enable-features", "", "experimental features to include, comma-separated (prose_burstiness, clause_uniformity)")
-	alignNorm := fs.Bool("align-norm", false, "override engine.json align_normalization")
+	var alignNorm optBoolFlag
+	fs.Var(&alignNorm, "align-norm", "override engine.json align_normalization (default: from engine.json)")
 	shortProse := fs.String("short-prose", "", "override engine.json short_prose cutoffs, BELOW:ABOVE words (e.g. 150:350 or 0:0)")
 	fwTrigrams := fs.Bool("fw-trigrams", false, "add function-word trigrams to the word-pattern model")
 	denseL2 := fs.Bool("dense-l2", false, "fit with experimental dense word-pattern regularization")
@@ -216,6 +233,8 @@ func runFit(args []string) error {
 		usage()
 		os.Exit(2)
 	}
+	enginePath := filepath.Join(*out, "engine.json")
+	_, outEngErr := os.Stat(enginePath)
 	o, err := train.ReleaseFitOptions(*out)
 	if err != nil {
 		return err
@@ -234,16 +253,24 @@ func runFit(args []string) error {
 	}
 	visited := map[string]bool{}
 	fs.Visit(func(fl *flag.Flag) { visited[fl.Name] = true })
-	engineOverridden := false
+	var overrides []string
 	if visited["align-norm"] {
-		o.Engine.AlignNormalization = *alignNorm
-		engineOverridden = true
+		o.Engine.AlignNormalization = alignNorm.val
+		overrides = append(overrides, "-align-norm")
 	}
 	if visited["short-prose"] {
 		if _, err := fmt.Sscanf(*shortProse, "%d:%d", &o.Engine.ShortProse.Below, &o.Engine.ShortProse.Above); err != nil {
 			return fmt.Errorf("-short-prose %q: want BELOW:ABOVE", *shortProse)
 		}
-		engineOverridden = true
+		overrides = append(overrides, "-short-prose")
+	}
+	engineOverridden := len(overrides) > 0
+	engineSource := "embedded engine.json"
+	if outEngErr == nil {
+		engineSource = enginePath
+	}
+	if engineOverridden {
+		engineSource += " + CLI flags (" + strings.Join(overrides, ", ") + ")"
 	}
 	var since time.Time
 	hasSince := *excludeSince != ""
@@ -257,18 +284,19 @@ func runFit(args []string) error {
 		if split.Of(id) != "train" {
 			return false
 		}
-		if hasSince && strings.Contains("/"+filepath.ToSlash(path), "/ai/") {
+		if role, _ := split.PathRole(path); hasSince && role == "ai" {
 			if st, err := os.Stat(path); err == nil && st.ModTime().After(since) {
 				return false
 			}
 		}
 		return true
 	}
+	fmt.Printf("engine options (%s): align_normalization=%v short_prose=%d:%d\n",
+		engineSource, o.Engine.AlignNormalization, o.Engine.ShortProse.Below, o.Engine.ShortProse.Above)
 	r, err := train.FitWith(context.Background(), k, fs.Args(), *out, o)
 	if err != nil {
 		return err
 	}
-	enginePath := filepath.Join(*out, "engine.json")
 	if engineOverridden {
 		b, err := json.MarshalIndent(o.Engine, "", " ")
 		if err != nil {
@@ -443,10 +471,27 @@ func runThresholds(args []string) error {
 		modelDir, thresholdsPath = filepath.Dir(*out), *out
 	}
 	e := engine.Default()
+	var candFiles []string
 	if st, err := os.Stat(modelDir); err == nil && st.IsDir() {
-		if e, err = engine.FromDir(modelDir); err != nil {
-			return err
+		for _, name := range []string{
+			"engine.json",
+			"prose.json", "prose.ngram.json", "prose.short.json", "prose.lm.json",
+			"pr.json", "pr.ngram.json", "pr.short.json", "pr.lm.json",
+		} {
+			if fi, err := os.Stat(filepath.Join(modelDir, name)); err == nil && !fi.IsDir() {
+				candFiles = append(candFiles, name)
+			}
 		}
+		if len(candFiles) > 0 {
+			if e, err = engine.FromDir(modelDir); err != nil {
+				return err
+			}
+		}
+	}
+	if len(candFiles) > 0 {
+		fmt.Printf("scoring calibration texts with models loaded from %s (%s)\n", modelDir, strings.Join(candFiles, ", "))
+	} else {
+		fmt.Println("scoring calibration texts with embedded production models")
 	}
 	var keep eval.Keep
 	if *excludeHoldout {
