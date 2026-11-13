@@ -238,6 +238,17 @@ func (o overlayFS) Open(name string) (fs.File, error) {
 	if f, err := o.top.Open(name); err == nil {
 		return f, nil
 	}
+	// A directory with its own <kind>.lm.json but no <kind>.lm.ngram.json
+	// predates the separate LM word-pattern file: its LM model was fitted
+	// against the directory's <kind>.ngram.json, so use that rather than an
+	// embedded <kind>.lm.ngram.json fitted for a different model.
+	if kind, ok := strings.CutSuffix(name, ".lm.ngram.json"); ok {
+		if _, err := fs.Stat(o.top, kind+".lm.json"); err == nil {
+			if f, err := o.top.Open(kind + ".ngram.json"); err == nil {
+				return f, nil
+			}
+		}
+	}
 	return o.base.Open(name)
 }
 
