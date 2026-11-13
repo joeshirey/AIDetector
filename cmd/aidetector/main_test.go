@@ -2,18 +2,23 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/joeshirey/AIDetector/internal/calibrate"
 	"github.com/joeshirey/AIDetector/internal/engine"
+	"github.com/joeshirey/AIDetector/internal/mcpserver"
 )
 
 func TestMain(m *testing.M) {
@@ -544,5 +549,185 @@ func TestFitAndThresholdsRequireOut(t *testing.T) {
 	shippedRel := filepath.Join(workDir, "internal", "engine", "models")
 	if _, err := os.Stat(shippedRel); err == nil {
 		t.Errorf("CLI wrote to default %s when -out was omitted; must never write to internal/engine/models", shippedRel)
+	}
+}
+
+func assertValidModelsSHA(t *testing.T, label, id string) {
+	t.Helper()
+	if !strings.HasPrefix(id, "sha256:") || len(id) != len("sha256:")+64 {
+		t.Errorf("%s = %q, want sha256:<64-hex>", label, id)
+	}
+}
+
+// AC4 + AC5: aidetector -version, --version, and version exit 0 and print
+// version, commit (or "unknown" when unstamped), Go version, and the embedded
+// models sha256 identifier; usage() includes version / -version.
+func TestCLIVersionAndUsage(t *testing.T) {
+	t.Setenv("AIDETECTOR_SCORER_URL", "")
+	workDir := t.TempDir()
+
+	bi := engine.Default().BuildInfo()
+	assertValidModelsSHA(t, "engine.Default().BuildInfo().Models", bi.Models)
+
+	wantCommit := bi.Commit
+	if wantCommit == "" {
+		wantCommit = "unknown"
+	}
+
+	var firstOut string
+	for _, arg := range []string{"-version", "--version", "version"} {
+		stdout, stderr, code := runCLI(t, workDir, arg)
+		if code != 0 {
+			t.Errorf("aidetector %s exited %d (stderr=%q), want 0", arg, code, stderr)
+			continue
+		}
+		if stderr != "" {
+			t.Errorf("aidetector %s wrote unexpected stderr %q", arg, stderr)
+		}
+		if bi.Version == "" || !strings.Contains(stdout, bi.Version) {
+			t.Errorf("aidetector %s stdout %q missing version %q", arg, stdout, bi.Version)
+		}
+		if !strings.Contains(stdout, wantCommit) {
+			t.Errorf("aidetector %s stdout %q missing commit %q", arg, stdout, wantCommit)
+		}
+		if !strings.Contains(stdout, runtime.Version()) {
+			t.Errorf("aidetector %s stdout %q missing Go version %q", arg, stdout, runtime.Version())
+		}
+		if !strings.HasPrefix(bi.Models, "sha256:") || !strings.Contains(stdout, bi.Models) {
+			t.Errorf("aidetector %s stdout %q missing models digest %q", arg, stdout, bi.Models)
+		}
+		if firstOut == "" {
+			firstOut = stdout
+		} else if stdout != firstOut {
+			t.Errorf("aidetector %s stdout %q != -version stdout %q", arg, stdout, firstOut)
+		}
+	}
+
+	_, helpErr, helpCode := runCLI(t, workDir, "-h")
+	if helpCode != 0 {
+		t.Fatalf("aidetector -h exited %d, want 0", helpCode)
+	}
+	if !strings.Contains(helpErr, "version") || !strings.Contains(helpErr, "-version") {
+		t.Errorf("usage() output missing version / -version:\n%s", helpErr)
+	}
+}
+
+// AC3 + AC5: CLI -json output and MCP detect_ai_text tool results over an
+// in-memory transport both include Result.Build with valid jsonschema tags.
+func TestCLIJSONAndMCPServerIncludeBuildInfo(t *testing.T) {
+	t.Setenv("AIDETECTOR_SCORER_URL", "")
+	workDir := t.TempDir()
+
+	sampleText := "Yesterday afternoon I patched three cedar shingles above the back porch overhang, " +
+		"swept the pine needles out of the copper gutter, and sealed the corner seam before dusk. " +
+		"The old flashing had worked loose during January windstorms, so I replaced two rusted nails " +
+		"and checked the attic rafters with a flashlight when the rain started."
+	samplePath := filepath.Join(workDir, "note.txt")
+	writeSyntheticFile(t, samplePath, sampleText, time.Time{})
+
+	wantBuild := engine.Default().BuildInfo()
+	assertValidModelsSHA(t, "Default().BuildInfo().Models", wantBuild.Models)
+
+	stdout, stderr, code := runCLI(t, workDir, "-json", samplePath)
+	if code != 0 {
+		t.Fatalf("aidetector -json failed (exit %d): %s", code, stderr)
+	}
+	var cliRes engine.Result
+	if err := json.Unmarshal([]byte(stdout), &cliRes); err != nil {
+		t.Fatalf("unmarshal CLI JSON: %v", err)
+	}
+	if cliRes.Build != wantBuild {
+		t.Errorf("CLI -json Result.Build = %+v, want %+v", cliRes.Build, wantBuild)
+	}
+	assertValidModelsSHA(t, "CLI -json Result.Build.Models", cliRes.Build.Models)
+
+	// Verify MCP server tool schema registration and detect_ai_text structured output.
+	ctx := context.Background()
+	srv := mcpserver.New(engine.Default(), "test")
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	serverSession, err := srv.Connect(ctx, serverTransport, nil)
+	if err != nil {
+		t.Fatalf("srv.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = serverSession.Close() })
+
+	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "v0.0.1"}, nil)
+	clientSession, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client.Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = clientSession.Close() })
+
+	toolsRes, err := clientSession.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	foundDetectText := false
+	for _, tool := range toolsRes.Tools {
+		if tool.Name == "detect_ai_text" {
+			foundDetectText = true
+			schemaBytes, err := json.Marshal(tool.OutputSchema)
+			if err != nil {
+				t.Fatalf("marshal OutputSchema: %v", err)
+			}
+			if !strings.Contains(string(schemaBytes), `"build"`) {
+				t.Errorf("detect_ai_text OutputSchema missing \"build\" property: %s", schemaBytes)
+			}
+		}
+	}
+	if !foundDetectText {
+		t.Fatalf("detect_ai_text tool not registered in %+v", toolsRes.Tools)
+	}
+
+	for _, tc := range []struct {
+		name string
+		text string
+	}{
+		{name: "prose", text: sampleText},
+		{name: "empty", text: ""},
+	} {
+		callRes, err := clientSession.CallTool(ctx, &mcp.CallToolParams{
+			Name:      "detect_ai_text",
+			Arguments: map[string]any{"text": tc.text, "kind": "prose"},
+		})
+		if err != nil {
+			t.Fatalf("CallTool(%s): %v", tc.name, err)
+		}
+		if callRes.IsError {
+			t.Fatalf("CallTool(%s) returned tool error: %+v", tc.name, callRes.Content)
+		}
+		scBytes, err := json.Marshal(callRes.StructuredContent)
+		if err != nil {
+			t.Fatalf("marshal StructuredContent(%s): %v", tc.name, err)
+		}
+		var mcpRes engine.Result
+		if err := json.Unmarshal(scBytes, &mcpRes); err != nil {
+			t.Fatalf("unmarshal StructuredContent(%s): %v", tc.name, err)
+		}
+		if mcpRes.Build != wantBuild {
+			t.Errorf("MCP detect_ai_text(%s) Build = %+v, want %+v", tc.name, mcpRes.Build, wantBuild)
+		}
+		assertValidModelsSHA(t, "MCP detect_ai_text("+tc.name+").Build.Models", mcpRes.Build.Models)
+		if mcpRes.Build.Version == "" || mcpRes.Build.GoVersion != runtime.Version() {
+			t.Errorf("MCP detect_ai_text(%s) Build = %+v, want non-empty Version and GoVersion %q",
+				tc.name, mcpRes.Build, runtime.Version())
+		}
+	}
+}
+
+// AC6: README.md documents aidetector -version and the Result.build JSON field.
+func TestReadmeVersionAndBuildDocs(t *testing.T) {
+	readmePath := filepath.Join("..", "..", "README.md")
+	b, err := os.ReadFile(readmePath)
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	full := string(b)
+
+	if !strings.Contains(full, "aidetector -version") {
+		t.Errorf("README.md missing documentation for 'aidetector -version'")
+	}
+	if !strings.Contains(full, "- `build`") {
+		t.Errorf("README.md missing bullet documenting the `build` JSON field")
 	}
 }

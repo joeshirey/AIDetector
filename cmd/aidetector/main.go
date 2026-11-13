@@ -1,6 +1,7 @@
 // Command aidetector scores text for AI authorship from the command line.
 //
 //	aidetector [detect] [-kind K] [-json] [file|-]
+//	aidetector -version
 //	aidetector eval [-kind K] [-split train|test] [-heuristic] [-json] DIR...
 //	aidetector fit  -kind K -out DIR DIR...
 //	aidetector dist [-kind K] DIR...   score distribution of a folder (e.g. the human pool)
@@ -40,6 +41,9 @@ func main() {
 		switch args[0] {
 		case "detect", "eval", "fit", "dist", "thresholds", "setup", "fixtures":
 			cmd, args = args[0], args[1:]
+		case "-version", "--version", "version":
+			printVersion(engine.Default().BuildInfo())
+			return
 		case "-h", "-help", "--help", "help":
 			usage()
 			return
@@ -68,11 +72,32 @@ func main() {
 	}
 }
 
+func printVersion(bi engine.BuildInfo) {
+	ver := bi.Version
+	if ver == "" {
+		ver = "unknown"
+	}
+	commit := bi.Commit
+	if commit == "" {
+		commit = "unknown"
+	}
+	goVer := bi.GoVersion
+	if goVer == "" {
+		goVer = "unknown"
+	}
+	models := bi.Models
+	if models == "" {
+		models = "none"
+	}
+	fmt.Printf("aidetector %s (commit %s, %s)\nmodels: %s\n", ver, commit, goVer, models)
+}
+
 func usage() {
 	fmt.Fprint(os.Stderr, `usage:
   aidetector setup [-client all|claude|codex|antigravity] [-dry-run] [-skill-only] [-scorer URL]
   aidetector fixtures [-fetch-only]   fetch (cached, gitignored) and score the regression fixtures
   aidetector [detect] [-kind auto|prose|pr] [-json] [file|-]
+  aidetector -version | version       print build version and loaded-models digest
   aidetector eval [-kind K] [-split train|test] [-heuristic] [-json] DIR...   (DIR/human/*, DIR/ai/*)
   aidetector fit -kind prose|pr -out OUT_DIR [-exclude-since RFC3339] DIR...
   aidetector dist [-kind K] DIR...   score distribution for every .txt under DIR (pool false-positive rate, variant sets)
