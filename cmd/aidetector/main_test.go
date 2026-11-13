@@ -946,9 +946,9 @@ func TestCLIFitLMThresholdsAndReadmeLMNgramDocs(t *testing.T) {
 		t.Fatalf("read README.md: %v", err)
 	}
 	readme := string(readmeBytes)
-	secStart := strings.Index(readme, "## Experimental: Binoculars scoring")
+	secStart := strings.Index(readme, "## Optional: token-probability scoring")
 	if secStart < 0 {
-		t.Fatalf("README.md missing '## Experimental: Binoculars scoring' section")
+		t.Fatalf("README.md missing '## Optional: token-probability scoring' section")
 	}
 	sec := readme[secStart:]
 	if nextSec := strings.Index(sec[1:], "\n## "); nextSec >= 0 {
@@ -957,7 +957,7 @@ func TestCLIFitLMThresholdsAndReadmeLMNgramDocs(t *testing.T) {
 	hasLMJSON := strings.Contains(sec, "prose.lm.json") || strings.Contains(sec, "<kind>.lm.json")
 	hasLMNgramJSON := strings.Contains(sec, "prose.lm.ngram.json") || strings.Contains(sec, "<kind>.lm.ngram.json")
 	if !hasLMJSON || !hasLMNgramJSON {
-		t.Errorf("README.md Binoculars fit -lm section must mention both prose.lm.json/<kind>.lm.json and prose.lm.ngram.json/<kind>.lm.ngram.json; got:\n%s", sec)
+		t.Errorf("README.md token-probability scoring section must mention both prose.lm.json/<kind>.lm.json and prose.lm.ngram.json/<kind>.lm.ngram.json; got:\n%s", sec)
 	}
 
 	// 2. aidetector fit -h must mention lm.ngram.json alongside KIND.lm.json.
