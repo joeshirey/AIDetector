@@ -398,14 +398,14 @@ func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 	res.Score = int(math.Round(e.scaleDoc(in.Kind, raw, signals, res.WordCount)))
 	res.Label = Label(res.Score)
 	res.Confidence = confidenceLabel(conf, signals)
-	if n := minWords[in.Kind]; res.WordCount < n && res.Score < 97 {
+	if n := minWords[in.Kind]; res.WordCount < n && !hasDecisive(signals) {
 		res.Label, res.Confidence = TooShort, "low"
 		res.Notes = append(res.Notes, fmt.Sprintf("%d words is below the %d-word minimum for %s; the score is not meaningful at this length", res.WordCount, n, in.Kind))
 	}
 	res.Signals = signals
 	res.Reasons = e.reasons(in.Kind, signals, res.WordCount)
 
-	if conf < 0.4 && res.Score < 97 && e.models[in.Kind] == nil {
+	if conf < 0.4 && !hasDecisive(signals) && e.models[in.Kind] == nil {
 		res.Notes = append(res.Notes, fmt.Sprintf("only %d words; short texts are hard to judge, so the score is pulled toward 50", res.WordCount))
 	}
 	if len(signals) == 0 {
@@ -711,11 +711,18 @@ func lengthConfidence(k detect.Kind, words int) float64 {
 	return min(1, float64(words)/full)
 }
 
-func confidenceLabel(conf float64, signals []detect.Signal) string {
+func hasDecisive(signals []detect.Signal) bool {
 	for _, s := range signals {
 		if s.Decisive {
-			return "high"
+			return true
 		}
+	}
+	return false
+}
+
+func confidenceLabel(conf float64, signals []detect.Signal) string {
+	if hasDecisive(signals) {
+		return "high"
 	}
 	switch {
 	case conf < 0.4 || len(signals) < 2:

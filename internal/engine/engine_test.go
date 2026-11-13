@@ -134,6 +134,239 @@ func TestTooShort(t *testing.T) {
 	}
 }
 
+type shortGuardStubDetector struct {
+	signals []detect.Signal
+}
+
+func (d shortGuardStubDetector) Name() string { return "short_guard_stub" }
+
+func (d shortGuardStubDetector) Detect(context.Context, detect.Input) ([]detect.Signal, error) {
+	return d.signals, nil
+}
+
+func notesContain(notes []string, sub string) bool {
+	for _, n := range notes {
+		if strings.Contains(n, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestShortProseHighScoreWithoutDecisiveIsTooShort(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("fitted_prose_under_50_words_high_score_no_decisive", func(t *testing.T) {
+		prose := "In today's fast-paced digital landscape, observability has become more than just a buzzword — it's a crucial pillar of modern software engineering. Whether you're a seasoned SRE or a developer just starting out, understanding how to harness telemetry can be transformative for your team."
+		res, err := Default().Analyze(ctx, detect.Input{Text: prose, Kind: detect.KindProse})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.WordCount >= 50 {
+			t.Fatalf("precondition failed: WordCount = %d, want < 50", res.WordCount)
+		}
+		if res.Score < 97 {
+			t.Fatalf("precondition failed: Score = %d, want >= 97 to exercise the bug", res.Score)
+		}
+		for _, s := range res.Signals {
+			if s.Decisive {
+				t.Fatalf("precondition failed: unexpected decisive signal %q", s.Name)
+			}
+		}
+		if res.Label != TooShort || res.Confidence != "low" {
+			t.Errorf("got Label=%q Confidence=%q (Score=%d, WordCount=%d), want Label=%q Confidence=\"low\"",
+				res.Label, res.Confidence, res.Score, res.WordCount, TooShort)
+		}
+		if !notesContain(res.Notes, "below the 50-word minimum for prose") {
+			t.Errorf("Notes = %q, want minimum-length note containing %q", res.Notes, "below the 50-word minimum for prose")
+		}
+	})
+
+	t.Run("synthetic_under_minimum_high_score_no_decisive", func(t *testing.T) {
+		e := New(shortGuardStubDetector{signals: []detect.Signal{
+			{Name: "synthetic_high", Detector: "short_guard_stub", Value: 1, AIProb: 0.98, Weight: 100, Decisive: false},
+			{Name: "synthetic_aux", Detector: "short_guard_stub", Value: 1, AIProb: 0.98, Weight: 100, Decisive: false},
+		}})
+
+		prose49 := strings.TrimSpace(strings.Repeat("alpha ", 49))
+		res, err := e.Analyze(ctx, detect.Input{Text: prose49, Kind: detect.KindProse})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.WordCount != 49 || res.Score < 97 {
+			t.Fatalf("precondition failed: WordCount=%d Score=%d, want 49 and >= 97", res.WordCount, res.Score)
+		}
+		if res.Label != TooShort || res.Confidence != "low" {
+			t.Errorf("49-word prose: got Label=%q Confidence=%q, want %q / \"low\"", res.Label, res.Confidence, TooShort)
+		}
+		if !notesContain(res.Notes, "49 words is below the 50-word minimum for prose") {
+			t.Errorf("49-word prose Notes = %q, want 50-word minimum note", res.Notes)
+		}
+
+		pr24 := strings.TrimSpace(strings.Repeat("alpha ", 24))
+		resPR, err := e.Analyze(ctx, detect.Input{Text: pr24, Kind: detect.KindPR})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resPR.WordCount != 24 || resPR.Score < 97 {
+			t.Fatalf("precondition failed: WordCount=%d Score=%d, want 24 and >= 97", resPR.WordCount, resPR.Score)
+		}
+		if resPR.Label != TooShort || resPR.Confidence != "low" {
+			t.Errorf("24-word PR: got Label=%q Confidence=%q, want %q / \"low\"", resPR.Label, resPR.Confidence, TooShort)
+		}
+		if !notesContain(resPR.Notes, "24 words is below the 25-word minimum for pr") {
+			t.Errorf("24-word PR Notes = %q, want 25-word minimum note", resPR.Notes)
+		}
+	})
+
+	t.Run("short_pr_with_decisive_tell_gets_real_label", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			eng  *Engine
+		}{
+			{"default", Default()},
+			{"heuristic", Heuristic()},
+		} {
+			res, err := tc.eng.Analyze(ctx, detect.Input{Text: agentPR, Kind: detect.KindPR})
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if res.Kind != detect.KindPR || res.WordCount >= 25 {
+				t.Fatalf("%s precondition failed: Kind=%s WordCount=%d, want pr < 25 words", tc.name, res.Kind, res.WordCount)
+			}
+			if res.Score < 97 || res.Label != "AI" || res.Confidence != "high" {
+				t.Errorf("%s: got Score=%d Label=%q Confidence=%q, want >=97 / \"AI\" / \"high\"",
+					tc.name, res.Score, res.Label, res.Confidence)
+			}
+			if notesContain(res.Notes, "below the 25-word minimum") {
+				t.Errorf("%s: decisive short PR should not get minimum-length note, got Notes=%q", tc.name, res.Notes)
+			}
+			if notesContain(res.Notes, "pulled toward 50") {
+				t.Errorf("%s: decisive short PR should not get pulled-toward-50 note, got Notes=%q", tc.name, res.Notes)
+			}
+		}
+	})
+
+	t.Run("at_or_above_minimum_unchanged", func(t *testing.T) {
+		e := New(shortGuardStubDetector{signals: []detect.Signal{
+			{Name: "synthetic_high", Detector: "short_guard_stub", Value: 1, AIProb: 0.98, Weight: 100, Decisive: false},
+			{Name: "synthetic_aux", Detector: "short_guard_stub", Value: 1, AIProb: 0.98, Weight: 100, Decisive: false},
+		}})
+
+		prose50 := strings.TrimSpace(strings.Repeat("alpha ", 50))
+		resProse, err := e.Analyze(ctx, detect.Input{Text: prose50, Kind: detect.KindProse})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resProse.WordCount != 50 || resProse.Label != "AI" {
+			t.Errorf("50-word prose: got WordCount=%d Label=%q, want 50 / \"AI\"", resProse.WordCount, resProse.Label)
+		}
+		if notesContain(resProse.Notes, "below the 50-word minimum") {
+			t.Errorf("50-word prose Notes = %q, should not have minimum-length note", resProse.Notes)
+		}
+
+		pr25 := strings.TrimSpace(strings.Repeat("alpha ", 25))
+		resPR, err := e.Analyze(ctx, detect.Input{Text: pr25, Kind: detect.KindPR})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resPR.WordCount != 25 || resPR.Label != "AI" {
+			t.Errorf("25-word PR: got WordCount=%d Label=%q, want 25 / \"AI\"", resPR.WordCount, resPR.Label)
+		}
+		if notesContain(resPR.Notes, "below the 25-word minimum") {
+			t.Errorf("25-word PR Notes = %q, should not have minimum-length note", resPR.Notes)
+		}
+
+		fittedProse, err := Default().Analyze(ctx, detect.Input{Text: fixture(t, "ai_blog.md"), Kind: detect.KindProse})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fittedProse.WordCount < 50 || fittedProse.Label == TooShort {
+			t.Errorf("fitted >=50w prose: got WordCount=%d Label=%q, want >=50 and not %q", fittedProse.WordCount, fittedProse.Label, TooShort)
+		}
+
+		prLong := "## Summary\n\nFix a nil pointer dereference in the configuration loader when the file on disk is empty by returning defaults instead of dereferencing an uninitialized struct pointer during startup."
+		fittedPR, err := Default().Analyze(ctx, detect.Input{Text: prLong, Kind: detect.KindPR})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fittedPR.WordCount < 25 || fittedPR.Label == TooShort {
+			t.Errorf("fitted >=25w PR: got WordCount=%d Label=%q, want >=25 and not %q", fittedPR.WordCount, fittedPR.Label, TooShort)
+		}
+	})
+}
+
+func TestShortHeuristicNoteDependsOnDecisiveNotScore(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("non_decisive_high_score_includes_pulled_toward_50_note", func(t *testing.T) {
+		e := New(shortGuardStubDetector{signals: []detect.Signal{
+			{Name: "synthetic_high", Detector: "short_guard_stub", Value: 1, AIProb: 0.98, Weight: 100, Decisive: false},
+		}})
+
+		// 10 words (< 50 minWords and conf = 10/300 < 0.4) with Score >= 97 and no decisive signal:
+		// must get both TooShort + minimum-length note AND the heuristic pulled-toward-50 note.
+		short10 := strings.TrimSpace(strings.Repeat("alpha ", 10))
+		res10, err := e.Analyze(ctx, detect.Input{Text: short10, Kind: detect.KindProse})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res10.WordCount != 10 || res10.Score < 97 {
+			t.Fatalf("precondition failed: WordCount=%d Score=%d, want 10 and >= 97", res10.WordCount, res10.Score)
+		}
+		if res10.Label != TooShort || res10.Confidence != "low" {
+			t.Errorf("10-word heuristic prose: got Label=%q Confidence=%q, want %q / \"low\"", res10.Label, res10.Confidence, TooShort)
+		}
+		if !notesContain(res10.Notes, "10 words is below the 50-word minimum for prose") {
+			t.Errorf("10-word heuristic prose Notes = %q, want minimum-length note", res10.Notes)
+		}
+		if !notesContain(res10.Notes, "pulled toward 50") {
+			t.Errorf("10-word heuristic prose Notes = %q, want \"pulled toward 50\" note", res10.Notes)
+		}
+
+		// 60 words (>= 50 minWords, but conf = 60/300 = 0.2 < 0.4) with Score >= 97 and no decisive signal:
+		// not TooShort, yet engine.go:408 still applies because conf < 0.4 and no signal is Decisive.
+		short60 := strings.TrimSpace(strings.Repeat("alpha ", 60))
+		res60, err := e.Analyze(ctx, detect.Input{Text: short60, Kind: detect.KindProse})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res60.WordCount != 60 || res60.Score < 97 {
+			t.Fatalf("precondition failed: WordCount=%d Score=%d, want 60 and >= 97", res60.WordCount, res60.Score)
+		}
+		if res60.Label != "AI" {
+			t.Errorf("60-word heuristic prose: got Label=%q, want \"AI\"", res60.Label)
+		}
+		if !notesContain(res60.Notes, "pulled toward 50") {
+			t.Errorf("60-word heuristic prose Notes = %q, want \"pulled toward 50\" note", res60.Notes)
+		}
+	})
+
+	t.Run("decisive_signal_omits_pulled_toward_50_note", func(t *testing.T) {
+		e := New(shortGuardStubDetector{signals: []detect.Signal{
+			{Name: "synthetic_decisive", Detector: "short_guard_stub", Value: 1, AIProb: 0.99, Weight: 3, Decisive: true},
+		}})
+
+		for _, nWords := range []int{10, 60} {
+			txt := strings.TrimSpace(strings.Repeat("alpha ", nWords))
+			res, err := e.Analyze(ctx, detect.Input{Text: txt, Kind: detect.KindProse})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Score < 97 || res.Label != "AI" || res.Confidence != "high" {
+				t.Errorf("%d-word decisive prose: got Score=%d Label=%q Confidence=%q, want >=97 / \"AI\" / \"high\"",
+					nWords, res.Score, res.Label, res.Confidence)
+			}
+			if notesContain(res.Notes, "pulled toward 50") {
+				t.Errorf("%d-word decisive prose Notes = %q, should not contain \"pulled toward 50\"", nWords, res.Notes)
+			}
+			if notesContain(res.Notes, "below the 50-word minimum") {
+				t.Errorf("%d-word decisive prose Notes = %q, should not contain minimum-length note", nWords, res.Notes)
+			}
+		}
+	})
+}
+
 func TestSegmentThresholdsFallBack(t *testing.T) {
 	e := &Engine{thresholds: map[string]Thresholds{"prose": {Mixed: 20, LikelyAI: 50, AI: 65}}}
 	if got := e.SegmentThresholds(detect.KindProse); got.LikelyAI != 50 {
