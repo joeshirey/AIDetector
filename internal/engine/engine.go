@@ -40,6 +40,7 @@ type Result struct {
 	Cutoffs    Thresholds      `json:"cutoffs" jsonschema:"raw-score cutoffs for this kind that map to 40, 60, and 80, with measured human rates"`
 	Scorer     string          `json:"scorer,omitempty" jsonschema:"token-probability model used, if the local scorer was available"`
 	Notes      []string        `json:"notes,omitempty"`
+	Build      BuildInfo       `json:"build" jsonschema:"build version and loaded-models identifier for score traceability"`
 }
 
 // Reason explains one factor behind a score.
@@ -64,13 +65,14 @@ type Segment struct {
 }
 
 type Engine struct {
-	detectors  []detect.Detector
-	models     map[detect.Kind]*calibrate.Model
-	thresholds map[string]Thresholds
-	lm         *perplexity.Detector
-	lmKinds    map[detect.Kind]bool             // kinds scored by a model fitted with lm_* features
-	short      map[detect.Kind]*calibrate.Model // whole-document models for short texts (ShortModel)
-	opts       Options
+	detectors    []detect.Detector
+	models       map[detect.Kind]*calibrate.Model
+	thresholds   map[string]Thresholds
+	lm           *perplexity.Detector
+	lmKinds      map[detect.Kind]bool             // kinds scored by a model fitted with lm_* features
+	short        map[detect.Kind]*calibrate.Model // whole-document models for short texts (ShortModel)
+	opts         Options
+	modelsDigest string
 }
 
 // Options are experimental engine behaviors, read from engine.json next to
@@ -239,6 +241,7 @@ func (o overlayFS) Open(name string) (fs.File, error) {
 }
 
 func fromFS(models fs.FS) *Engine {
+	var loaded []loadedFile
 	loadModel := func(name string, v any) bool {
 		b, err := fs.ReadFile(models, name)
 		if err != nil {
@@ -247,6 +250,7 @@ func fromFS(models fs.FS) *Engine {
 		if err := json.Unmarshal(b, v); err != nil {
 			panic(fmt.Sprintf("model %s: %v", name, err))
 		}
+		loaded = append(loaded, loadedFile{name: name, data: b})
 		return true
 	}
 	var opts Options
@@ -276,6 +280,7 @@ func fromFS(models fs.FS) *Engine {
 	}
 	e.detectors = append(e.detectors, ngram.NewDetector(words))
 	loadModel("thresholds.json", &e.thresholds)
+	e.modelsDigest = hashLoadedModels(loaded)
 	return e
 }
 
@@ -362,7 +367,7 @@ func (e *Engine) analyze(ctx context.Context, in detect.Input) (Result, error) {
 			in.Text = text.StripEnvelope(in.Text)
 		}
 	}
-	res := Result{Kind: in.Kind, WordCount: len(text.Words(in.Text))}
+	res := Result{Kind: in.Kind, WordCount: len(text.Words(in.Text)), Build: e.BuildInfo()}
 	if e.lm != nil {
 		res.Scorer = e.lm.Model()
 	}

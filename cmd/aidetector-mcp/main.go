@@ -19,7 +19,14 @@ func main() {
 	log.SetOutput(os.Stderr) // stdout carries the MCP protocol
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	if err := mcpserver.New(engine.Default(), version).Run(ctx, &mcp.StdioTransport{}); err != nil {
+	e := engine.Default()
+	v := version
+	if v == "dev" {
+		if bv := e.BuildInfo().Version; bv != "" {
+			v = bv
+		}
+	}
+	if err := mcpserver.New(e, v).Run(ctx, &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
 	}
 }

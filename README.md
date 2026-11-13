@@ -56,6 +56,7 @@ From the command line:
 ```sh
 aidetector post.md                    # score a file
 pbpaste | aidetector -kind prose      # score the clipboard
+aidetector -version                   # build version and loaded-models digest
 ```
 
 The skill explains to agents how to read results (and what not to conclude
@@ -96,6 +97,10 @@ You also get:
   that block.
 - An `info` reason when code, tables, YAML front matter, or headings and
   captions were left out. Only the prose gets scored.
+- `build` in JSON and MCP results: the binary `version`, short git `commit`
+  (with `-dirty` if modified), `go_version`, and `models` (`"sha256:..."` over
+  the loaded model files), so a saved score can be traced back to the exact
+  build and models that produced it.
 
 Prose has to be at least 50 words and PR descriptions at least 25. Anything
 shorter comes back as "too short to judge", because the models never saw text
