@@ -1,14 +1,21 @@
 package overnight
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand/v2"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/joeshirey/AIDetector/internal/corpus"
+	"github.com/joeshirey/AIDetector/internal/detect"
+	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/fixtures"
 	"github.com/joeshirey/AIDetector/internal/split"
 )
@@ -422,6 +429,195 @@ func TestCorpusPathHelpersIgnoreParentAINames(t *testing.T) {
 	} {
 		if got := keepClaude(tc.path, "doc-1"); got != tc.want {
 			t.Errorf("onlyGens(claude)(%s: %q) = %v, want %v", tc.name, tc.path, got, tc.want)
+		}
+	}
+}
+
+// AC3 + AC4: RetrainCandidate with WithLM writes prose.lm.json,
+// prose.lm.ngram.json, pr.lm.json, and pr.lm.ngram.json (plus thresholds.json),
+// does NOT write prose.json, pr.json, prose.ngram.json, or pr.ngram.json into
+// candDir, and engine.FromDir(candDir) loads and scores cleanly both with and
+// without AIDETECTOR_SCORER_URL set.
+func TestRetrainCandidateWithLMIsolatesLMNgramAndOmitsFallbackCopies(t *testing.T) {
+	const modelID = "fake-observer+fake-performer"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"model":      modelID,
+				"max_tokens": 512,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/score":
+			var req struct {
+				Texts []string `json:"texts"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+				return
+			}
+			results := make([]map[string]any, len(req.Texts))
+			for i, txt := range req.Texts {
+				logPPL, xPPL, bino, curv := 2.80, 3.00, 0.933, 0.35
+				if strings.Contains(txt, "comprehensive") || strings.Contains(txt, "orchestration") {
+					logPPL, xPPL, bino, curv = 1.45, 2.15, 0.674, 2.80
+				}
+				results[i] = map[string]any{
+					"tokens":     64,
+					"log_ppl":    logPPL,
+					"x_ppl":      xPPL,
+					"binoculars": bino,
+					"curvature":  curv,
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"model":   modelID,
+				"results": results,
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "not found"})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("AIDETECTOR_SCORER_URL", srv.URL)
+
+	root := t.TempDir()
+	d := Data{Root: root}
+	for _, g := range Genres {
+		for _, sub := range []string{"human", filepath.Join("ai", "claude-sonnet-5-5")} {
+			if err := os.MkdirAll(filepath.Join(d.Dir(g), sub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	var trainIDs []string
+	for i := 0; len(trainIDs) < 6; i++ {
+		id := fmt.Sprintf("synth-%d", i)
+		if split.Of(id) == "train" {
+			trainIDs = append(trainIDs, id)
+		}
+	}
+
+	const (
+		humanProse = "Yesterday morning I carried the wooden ladder out behind the barn, scraped loose paint off the window frame, " +
+			"and replaced two cracked panes before noon. The putty knife left linseed oil on my sleeves while sparrows nested under the eaves " +
+			"and rain clouds gathered over the ridge. After lunch we stacked split oak by the woodshed, swept the gravel path clean, " +
+			"and brewed a fresh pot of strong coffee in the warm kitchen before evening.\n"
+		aiProse = "Modern cloud platforms leverage comprehensive observability, deterministic orchestration, and automated governance " +
+			"to streamline distributed workloads across hybrid clusters. Furthermore, standardized deployment pipelines strengthen operational " +
+			"resilience, eliminate configuration drift, and accelerate sustainable delivery velocity across engineering organizations. " +
+			"Teams that systematically align telemetry metrics with architectural guardrails consistently achieve predictable production reliability and scalable governance outcomes.\n"
+		humanPR = "Fix a nil pointer dereference in the configuration loader when the file on disk is empty on startup, " +
+			"return sensible default values instead of crashing during initialization, and add a unit test covering empty paths and missing directories.\n"
+		aiPR = "## Summary\n\nThis pull request introduces comprehensive orchestration safeguards in the configuration loader to ensure " +
+			"deterministic startup behavior, consistent validation semantics, and resilient error handling across empty input files and missing directories.\n"
+	)
+
+	blog, _ := GenreByName("blog")
+	pr, _ := GenreByName("pr")
+	for i, id := range trainIDs {
+		suffix := fmt.Sprintf(" (%d)\n", i)
+		for _, wf := range []struct {
+			path string
+			body string
+		}{
+			{filepath.Join(d.Dir(blog), "human", id+".txt"), humanProse + suffix},
+			{filepath.Join(d.Dir(blog), "ai", "claude-sonnet-5-5", id+".txt"), aiProse + suffix},
+			{filepath.Join(d.Dir(pr), "human", id+".txt"), humanPR + suffix},
+			{filepath.Join(d.Dir(pr), "ai", "claude-sonnet-5-5", id+".txt"), aiPR + suffix},
+		} {
+			if err := os.WriteFile(wf.path, []byte(wf.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	ctx := context.Background()
+	candDir := filepath.Join(t.TempDir(), "lm_candidate")
+	if err := RetrainCandidate(ctx, d, candDir, FitOptions{
+		WithLM:        true,
+		KeepCutoffs:   true,
+		SignConstrain: true,
+	}); err != nil {
+		t.Fatalf("RetrainCandidate(WithLM: true): %v", err)
+	}
+
+	for _, mustExist := range []string{
+		"prose.lm.json",
+		"prose.lm.ngram.json",
+		"pr.lm.json",
+		"pr.lm.ngram.json",
+		"thresholds.json",
+	} {
+		p := filepath.Join(candDir, mustExist)
+		if st, err := os.Stat(p); err != nil || st.Size() == 0 {
+			t.Errorf("expected non-empty %s in candDir (err=%v)", mustExist, err)
+		}
+	}
+	for _, mustNotExist := range []string{
+		"prose.json",
+		"pr.json",
+		"prose.ngram.json",
+		"pr.ngram.json",
+	} {
+		p := filepath.Join(candDir, mustNotExist)
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("RetrainCandidate(WithLM: true) should not write %s into candDir (err=%v)", mustNotExist, err)
+		}
+	}
+
+	// 1. With AIDETECTOR_SCORER_URL set, FromDir(candDir) loads the LM models + LM ngram models and scores cleanly.
+	eLM, err := engine.FromDir(candDir)
+	if err != nil {
+		t.Fatalf("engine.FromDir(candDir) with scorer: %v", err)
+	}
+	resLMProse, err := eLM.Analyze(ctx, detect.Input{Text: aiProse, Kind: detect.KindProse})
+	if err != nil {
+		t.Fatalf("Analyze(prose) with scorer: %v", err)
+	}
+	resLMPR, err := eLM.Analyze(ctx, detect.Input{Text: aiPR, Kind: detect.KindPR})
+	if err != nil {
+		t.Fatalf("Analyze(pr) with scorer: %v", err)
+	}
+	if resLMProse.Scorer != modelID || resLMPR.Scorer != modelID {
+		t.Errorf("Scorer = (%q, %q), want %q for both kinds", resLMProse.Scorer, resLMPR.Scorer, modelID)
+	}
+	if resLMProse.Label == engine.TooShort || resLMPR.Label == engine.TooShort {
+		t.Errorf("unexpected TooShort labels: prose=%q pr=%q", resLMProse.Label, resLMPR.Label)
+	}
+
+	// 2. With AIDETECTOR_SCORER_URL unset, FromDir(candDir) overlays onto the embedded fallback models cleanly.
+	t.Setenv("AIDETECTOR_SCORER_URL", "")
+	eFallback, err := engine.FromDir(candDir)
+	if err != nil {
+		t.Fatalf("engine.FromDir(candDir) without scorer: %v", err)
+	}
+	def := engine.Default()
+	if eFallback.BuildInfo().Models != def.BuildInfo().Models {
+		t.Errorf("without scorer, FromDir(candDir) Models = %q, want embedded Default() %q",
+			eFallback.BuildInfo().Models, def.BuildInfo().Models)
+	}
+	for _, tc := range []struct {
+		kind detect.Kind
+		text string
+	}{
+		{detect.KindProse, humanProse},
+		{detect.KindPR, humanPR},
+	} {
+		got, err := eFallback.Analyze(ctx, detect.Input{Text: tc.text, Kind: tc.kind})
+		if err != nil {
+			t.Fatalf("fallback Analyze(%s): %v", tc.kind, err)
+		}
+		want, err := def.Analyze(ctx, detect.Input{Text: tc.text, Kind: tc.kind})
+		if err != nil {
+			t.Fatalf("default Analyze(%s): %v", tc.kind, err)
+		}
+		if got.Scorer != "" || math.Abs(got.Raw-want.Raw) > 1e-12 || got.Score != want.Score {
+			t.Errorf("fallback Analyze(%s) = (Scorer=%q Raw=%.6f Score=%d), want Default (Raw=%.6f Score=%d)",
+				tc.kind, got.Scorer, got.Raw, got.Score, want.Raw, want.Score)
 		}
 	}
 }

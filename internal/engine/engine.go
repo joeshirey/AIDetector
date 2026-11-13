@@ -198,7 +198,7 @@ var modelFS embed.FS
 // Default returns an engine with every built-in detector plus the fitted
 // word-pattern and calibration models embedded in the binary. When the local
 // token-probability scorer is reachable it also uses the models fitted with
-// its features (<kind>.lm.json).
+// its features (<kind>.lm.json and <kind>.lm.ngram.json).
 func Default() *Engine {
 	sub, _ := fs.Sub(modelFS, "models")
 	return fromFS(sub)
@@ -220,8 +220,9 @@ func EmbeddedNames() ([]string, error) {
 }
 
 // FromDir loads candidate models from dir (prose.json, prose.ngram.json,
-// pr.json, pr.ngram.json, thresholds.json). Files missing from dir fall back
-// to the embedded ones, so a candidate can replace just one kind.
+// pr.json, pr.ngram.json, plus optional <kind>.lm.json, <kind>.lm.ngram.json,
+// <kind>.short.json, engine.json, and thresholds.json). Files missing from dir
+// fall back to the embedded ones, so a candidate can replace just one kind.
 func FromDir(dir string) (*Engine, error) {
 	if _, err := os.Stat(dir); err != nil {
 		return nil, err
@@ -274,7 +275,9 @@ func fromFS(models fs.FS) *Engine {
 			e.short[k] = &sm
 		}
 		var w ngram.Model
-		if loadModel(string(k)+".ngram.json", &w) {
+		if e.lmKinds[k] && loadModel(string(k)+".lm.ngram.json", &w) {
+			words[k] = &w
+		} else if loadModel(string(k)+".ngram.json", &w) {
 			words[k] = &w
 		}
 	}

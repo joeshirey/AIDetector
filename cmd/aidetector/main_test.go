@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/joeshirey/AIDetector/internal/calibrate"
+	"github.com/joeshirey/AIDetector/internal/detect/ngram"
 	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/mcpserver"
 )
@@ -926,5 +929,132 @@ func TestReadmeVersionAndBuildDocs(t *testing.T) {
 	}
 	if !strings.Contains(full, "Docker") || !strings.Contains(full, ".git") || !strings.Contains(full, "commit: unknown") {
 		t.Errorf("README.md missing Docker note explaining builds without .git report 'commit: unknown'")
+	}
+}
+
+// AC6 + CLI polish: README.md's fit -lm section documents both <kind>.lm.json /
+// prose.lm.json and <kind>.lm.ngram.json / prose.lm.ngram.json; aidetector fit -h
+// mentions lm.ngram.json; aidetector fit -lm writes prose.lm.ngram.json without
+// touching prose.ngram.json; and aidetector thresholds -out <dir> recognizes
+// prose.lm.ngram.json and pr.lm.ngram.json in candidate directories.
+func TestCLIFitLMThresholdsAndReadmeLMNgramDocs(t *testing.T) {
+	workDir := t.TempDir()
+
+	// 1. README.md fit -lm section must document both <kind>.lm.json / prose.lm.json and <kind>.lm.ngram.json / prose.lm.ngram.json.
+	readmeBytes, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatalf("read README.md: %v", err)
+	}
+	readme := string(readmeBytes)
+	secStart := strings.Index(readme, "## Experimental: Binoculars scoring")
+	if secStart < 0 {
+		t.Fatalf("README.md missing '## Experimental: Binoculars scoring' section")
+	}
+	sec := readme[secStart:]
+	if nextSec := strings.Index(sec[1:], "\n## "); nextSec >= 0 {
+		sec = sec[:nextSec+1]
+	}
+	hasLMJSON := strings.Contains(sec, "prose.lm.json") || strings.Contains(sec, "<kind>.lm.json")
+	hasLMNgramJSON := strings.Contains(sec, "prose.lm.ngram.json") || strings.Contains(sec, "<kind>.lm.ngram.json")
+	if !hasLMJSON || !hasLMNgramJSON {
+		t.Errorf("README.md Binoculars fit -lm section must mention both prose.lm.json/<kind>.lm.json and prose.lm.ngram.json/<kind>.lm.ngram.json; got:\n%s", sec)
+	}
+
+	// 2. aidetector fit -h must mention lm.ngram.json alongside KIND.lm.json.
+	_, helpErr, _ := runCLI(t, workDir, "fit", "-h")
+	if !strings.Contains(helpErr, "lm.json") || !strings.Contains(helpErr, "lm.ngram.json") {
+		t.Errorf("aidetector fit -h stderr must mention both KIND.lm.json and KIND.lm.ngram.json; got:\n%s", helpErr)
+	}
+
+	// 3. aidetector thresholds -out <dir> must recognize prose.lm.ngram.json and pr.lm.ngram.json in candidate directories.
+	prosePoolDir := filepath.Join(t.TempDir(), "prose_pool")
+	proseBody := "Yesterday afternoon I patched three cedar shingles above the back porch overhang, " +
+		"swept the pine needles out of the copper gutter, and sealed the corner seam before dusk. " +
+		"The old flashing had worked loose during January windstorms, so I replaced two rusted nails " +
+		"and checked the attic rafters with a flashlight when the rain started.\n"
+	prPoolDir := filepath.Join(t.TempDir(), "pr_pool")
+	prBody := "Fix nil pointer dereference when closing idle HTTP keep-alive connections after server shutdown timeout expires in worker pool.\n" +
+		"Added a unit test reproducing the race under load and verified connection draining completes cleanly without leaking goroutines.\n"
+	for _, id := range []string{"sample-002", "sample-008", "sample-001", "sample-004"} {
+		writeSyntheticFile(t, filepath.Join(prosePoolDir, id+".txt"), proseBody, time.Time{})
+		writeSyntheticFile(t, filepath.Join(prPoolDir, id+".txt"), prBody, time.Time{})
+	}
+
+	t.Setenv("AIDETECTOR_SCORER_URL", "")
+	candProseNgramDir := filepath.Join(t.TempDir(), "cand_prose_lm_ngram")
+	proseLMNgramBytes, _ := json.MarshalIndent(ngram.Model{Kind: "prose", Bias: 0.5, Weights: map[string]float64{"cedar": 1.0}}, "", " ")
+	writeSyntheticFile(t, filepath.Join(candProseNgramDir, "prose.lm.ngram.json"), string(proseLMNgramBytes)+"\n", time.Time{})
+
+	stdoutProseThresh, stderrProseThresh, codeProseThresh := runCLI(t, workDir, "thresholds", "-kind", "prose", "-only", "documents", "-out", candProseNgramDir, prosePoolDir)
+	if codeProseThresh != 0 {
+		t.Fatalf("thresholds prose.lm.ngram.json failed (exit %d): %s", codeProseThresh, stderrProseThresh)
+	}
+	if !strings.Contains(stdoutProseThresh, "models loaded from "+candProseNgramDir) || !strings.Contains(stdoutProseThresh, "prose.lm.ngram.json") {
+		t.Errorf("thresholds -out with prose.lm.ngram.json stdout = %q, want 'models loaded from %s (... prose.lm.ngram.json ...)'",
+			stdoutProseThresh, candProseNgramDir)
+	}
+
+	candPRNgramDir := filepath.Join(t.TempDir(), "cand_pr_lm_ngram")
+	prLMNgramBytes, _ := json.MarshalIndent(ngram.Model{Kind: "pr", Bias: 0.5, Weights: map[string]float64{"idle": 1.0}}, "", " ")
+	writeSyntheticFile(t, filepath.Join(candPRNgramDir, "pr.lm.ngram.json"), string(prLMNgramBytes)+"\n", time.Time{})
+
+	stdoutPRThresh, stderrPRThresh, codePRThresh := runCLI(t, workDir, "thresholds", "-kind", "pr", "-only", "documents", "-out", candPRNgramDir, prPoolDir)
+	if codePRThresh != 0 {
+		t.Fatalf("thresholds pr.lm.ngram.json failed (exit %d): %s", codePRThresh, stderrPRThresh)
+	}
+	if !strings.Contains(stdoutPRThresh, "models loaded from "+candPRNgramDir) || !strings.Contains(stdoutPRThresh, "pr.lm.ngram.json") {
+		t.Errorf("thresholds -out with pr.lm.ngram.json stdout = %q, want 'models loaded from %s (... pr.lm.ngram.json ...)'",
+			stdoutPRThresh, candPRNgramDir)
+	}
+
+	// 4. End-to-end aidetector fit -lm + thresholds with synthetic httptest scorer.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{"model": "fake-observer+fake-performer", "max_tokens": 512})
+		case r.Method == http.MethodPost && r.URL.Path == "/score":
+			var req struct {
+				Texts []string `json:"texts"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			results := make([]map[string]any, len(req.Texts))
+			for i := range req.Texts {
+				results[i] = map[string]any{"tokens": 64, "log_ppl": 1.85, "x_ppl": 2.35, "binoculars": 0.787, "curvature": 1.45}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"model": "fake-observer+fake-performer", "results": results})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv("AIDETECTOR_SCORER_URL", srv.URL)
+
+	corpusDir := buildSyntheticProseCorpus(t)
+	lmFitDir := filepath.Join(t.TempDir(), "cli_lm_fit")
+	sentinelBytes := []byte("{\n \"kind\": \"prose\",\n \"bias\": -0.9876,\n \"weights\": {\n  \"sentinel_cli_term\": -2.5\n }\n}\n")
+	writeSyntheticFile(t, filepath.Join(lmFitDir, "prose.ngram.json"), string(sentinelBytes), time.Time{})
+
+	_, fitStderr, fitCode := runCLI(t, workDir, "fit", "-lm", "-kind", "prose", "-out", lmFitDir, corpusDir)
+	if fitCode != 0 {
+		t.Fatalf("aidetector fit -lm failed (exit %d): %s", fitCode, fitStderr)
+	}
+	if _, err := os.Stat(filepath.Join(lmFitDir, "prose.lm.ngram.json")); err != nil {
+		t.Errorf("aidetector fit -lm did not write prose.lm.ngram.json: %v", err)
+	}
+	gotSentinel, err := os.ReadFile(filepath.Join(lmFitDir, "prose.ngram.json"))
+	if err != nil {
+		t.Fatalf("read pre-existing prose.ngram.json: %v", err)
+	}
+	if !bytes.Equal(gotSentinel, sentinelBytes) {
+		t.Errorf("aidetector fit -lm overwrote pre-existing prose.ngram.json")
+	}
+
+	threshOut, threshErr, threshCode := runCLI(t, workDir, "thresholds", "-kind", "prose", "-only", "documents", "-out", lmFitDir, prosePoolDir)
+	if threshCode != 0 {
+		t.Fatalf("aidetector thresholds on lmFitDir failed (exit %d): %s", threshCode, threshErr)
+	}
+	if !strings.Contains(threshOut, "prose.lm.ngram.json") {
+		t.Errorf("aidetector thresholds stdout missing prose.lm.ngram.json in candidate file list:\n%s", threshOut)
 	}
 }
