@@ -341,3 +341,87 @@ func TestCountTraining(t *testing.T) {
 		t.Fatalf("countTraining = %d, want 4", got)
 	}
 }
+
+func TestCorpusPathHelpersIgnoreParentAINames(t *testing.T) {
+	populate := func(root string) Data {
+		d := Data{Root: root}
+		write := func(p string) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("sample text\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		blog, _ := GenreByName("blog")
+		techblog, _ := GenreByName("techblog")
+		pr, _ := GenreByName("pr")
+
+		// 4 trainable files under human/ and ai/<gen>/.
+		write(filepath.Join(d.Dir(blog), "human", "doc-1.txt"))
+		write(d.OutputPath(blog, "claude-sonnet-5-5", "doc-1", StylePlain))
+		write(d.OutputPath(techblog, "gemini-3.8-flash", "doc-2", StylePersona))
+		write(filepath.Join(d.Dir(pr), "human", "doc-3.txt"))
+
+		// Excluded eval-only sets, reserve pool, test split, and non-.txt files.
+		write(d.OutputPath(blog, "claude-sonnet-5-5", "doc-1", StyleEdit))
+		write(filepath.Join(d.Dir(blog), "ai_polished", "claude-sonnet-5-5", "doc-1.txt"))
+		write(filepath.Join(d.Dir(blog), "ai_humanized", "claude-sonnet-5-5", "doc-1.txt"))
+		write(filepath.Join(d.Dir(blog), "pool", "doc-1.txt"))
+		write(filepath.Join(d.Dir(blog), "human", "doc-4.txt"))
+		write(d.OutputPath(blog, "claude-sonnet-5-5", "doc-4", StylePlain))
+		write(filepath.Join(d.Dir(blog), "human", "doc-1.json"))
+		return d
+	}
+
+	clean := populate(filepath.Join(t.TempDir(), "clean"))
+	nested := populate(filepath.Join(t.TempDir(), "ai", "claude-sonnet-5-5", "human", "checkout"))
+
+	if gotClean, gotNested := countTraining(clean), countTraining(nested); gotClean != 4 || gotNested != 4 {
+		t.Errorf("countTraining clean=%d nested(/ai/.../human/)=%d, want both 4", gotClean, gotNested)
+	}
+
+	blog, _ := GenreByName("blog")
+	humanPath := filepath.Join(nested.Dir(blog), "human", "doc-1.txt")
+	claudeAIPath := filepath.Join(nested.Dir(blog), "ai", "claude-sonnet-5-5", "doc-1.txt")
+	geminiAIPath := filepath.Join(nested.Dir(blog), "ai", "gemini-3.8-flash", "doc-1.txt")
+	poolPath := filepath.Join(nested.Dir(blog), "pool", "doc-1.txt")
+	editedPath := filepath.Join(nested.Dir(blog), "ai_edited", "claude-sonnet-5-5", "doc-1~edit.txt")
+	polishedPath := filepath.Join(nested.Dir(blog), "ai_polished", "claude-sonnet-5-5", "doc-1.txt")
+
+	for _, tc := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"ai_claude", claudeAIPath, true},
+		{"ai_gemini", geminiAIPath, true},
+		{"human", humanPath, false},
+		{"pool", poolPath, false},
+		{"ai_edited", editedPath, false},
+		{"ai_polished", polishedPath, false},
+	} {
+		if got := isAIPath(tc.path); got != tc.want {
+			t.Errorf("isAIPath(%s: %q) = %v, want %v", tc.name, tc.path, got, tc.want)
+		}
+	}
+
+	keepClaude := onlyGens(func(g string) bool { return g == "claude-sonnet-5-5" })
+	for _, tc := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"human_kept", humanPath, true},
+		{"matching_gen_kept", claudeAIPath, true},
+		{"other_gen_dropped", geminiAIPath, false},
+		{"pool_dropped", poolPath, false},
+		{"ai_edited_dropped", editedPath, false},
+		{"ai_polished_dropped", polishedPath, false},
+	} {
+		if got := keepClaude(tc.path, "doc-1"); got != tc.want {
+			t.Errorf("onlyGens(claude)(%s: %q) = %v, want %v", tc.name, tc.path, got, tc.want)
+		}
+	}
+}

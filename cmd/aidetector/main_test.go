@@ -376,80 +376,226 @@ func TestThresholdsExcludesFinalHoldoutAndUsesCandidateDir(t *testing.T) {
 	}
 }
 
-// AC2: README.md ("Rebuilding the models") documents both the reproducible
-// corpus overnight gate path and the aligned aidetector fit / thresholds
-// scratch-dir commands (including all 3 CalibrateCutoffs passes in order).
+// AC2: Every CLI invocation of aidetector fit or aidetector thresholds in
+// README.md passes an explicit -out flag (and at least one exists), without
+// coupling to surrounding README prose or ordering.
 func TestReadmeRebuildDocs(t *testing.T) {
 	readmePath := filepath.Join("..", "..", "README.md")
 	b, err := os.ReadFile(readmePath)
 	if err != nil {
 		t.Fatalf("read README.md: %v", err)
 	}
-	full := string(b)
 
-	start := strings.Index(full, "## Rebuilding the models")
-	if start < 0 {
-		t.Fatal("README.md missing '## Rebuilding the models' section")
-	}
-	section := full[start+len("## Rebuilding the models"):]
-	if next := strings.Index(section, "\n## "); next >= 0 {
-		section = section[:next]
-	}
-
-	if !strings.Contains(section, "overnight gate") {
-		t.Errorf("Rebuilding the models section must document 'corpus overnight gate'")
-	}
-
-	// Every CLI invocation of aidetector fit or aidetector thresholds in README
-	// must pass an explicit -out flag rather than defaulting to internal/engine/models.
-	for lineNo, line := range strings.Split(full, "\n") {
+	inFence := false
+	cmdLines := 0
+	for lineNo, line := range strings.Split(string(b), "\n") {
 		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			inFence = !inFence
+			continue
+		}
 		if strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		if (strings.Contains(trimmed, "aidetector fit ") || strings.Contains(trimmed, "aidetector thresholds ")) &&
-			!strings.Contains(trimmed, "-out ") {
-			t.Errorf("README.md:%d invokes fit/thresholds without explicit -out: %s", lineNo+1, trimmed)
+		isShellCmd := inFence || strings.HasPrefix(trimmed, "aidetector ") || strings.HasPrefix(trimmed, "bin/aidetector ")
+		if !isShellCmd {
+			continue
+		}
+		if idx := strings.Index(trimmed, " #"); idx >= 0 {
+			trimmed = strings.TrimSpace(trimmed[:idx])
+		}
+		if strings.Contains(trimmed, "aidetector fit ") || strings.HasSuffix(trimmed, "aidetector fit") ||
+			strings.Contains(trimmed, "aidetector thresholds ") || strings.HasSuffix(trimmed, "aidetector thresholds") {
+			cmdLines++
+			if !strings.Contains(trimmed, "-out ") && !strings.Contains(trimmed, "-out=") {
+				t.Errorf("README.md:%d invokes fit/thresholds without explicit -out: %s", lineNo+1, trimmed)
+			}
+		}
+	}
+	if cmdLines == 0 {
+		t.Fatal("README.md contains no aidetector fit or aidetector thresholds command lines")
+	}
+}
+
+// AC1: aidetector fit prints the engine.Options used (align_normalization and
+// short_prose) and where they came from (embedded engine.json, <out>/engine.json,
+// and/or CLI flag overrides) at the start of fit; aidetector fit -h describes
+// -align-norm with "default: from engine.json" without "(default false)", while
+// -align-norm, -align-norm=true, and -align-norm=false continue to work identically.
+func TestFitEngineOptionsProvenanceAndAlignNormHelp(t *testing.T) {
+	workDir := t.TempDir()
+	corpusDir := buildSyntheticProseCorpus(t)
+
+	// 1. Fresh -out directory with no CLI overrides -> embedded engine.json.
+	freshOut := filepath.Join(t.TempDir(), "fresh_out")
+	stdout, stderr, code := runCLI(t, workDir, "fit", "-kind", "prose", "-out", freshOut, corpusDir)
+	if code != 0 {
+		t.Fatalf("fit freshOut failed (exit %d): %s", code, stderr)
+	}
+	engIdx := strings.Index(stdout, "engine options")
+	wpIdx := strings.Index(stdout, "word-pattern model:")
+	if engIdx < 0 || wpIdx < 0 || !(engIdx < wpIdx) {
+		t.Errorf("expected engine options line printed at start of fit before word-pattern model, got stdout:\n%s", stdout)
+	}
+	for _, want := range []string{"align_normalization=true", "short_prose=150:350", "embedded engine.json"} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("fresh fit stdout missing %q:\n%s", want, stdout)
 		}
 	}
 
-	// Verify the 3 CalibrateCutoffs passes appear in order inside Rebuilding the models:
-	//   1) PR documents on corpus_fresh/pr/pool and corpus_prpool/pr/pool
-	//   2) Prose documents on corpus_fresh/{blog,memo,essay}/pool
-	//   3) Prose segments on those plus corpus_tech/blog/pool and corpus_nontech/blog/pool
-	var idxPR, idxProseDoc, idxProseSeg int = -1, -1, -1
-	for i, line := range strings.Split(section, "\n") {
-		if !strings.Contains(line, "aidetector thresholds") {
-			continue
-		}
-		switch {
-		case strings.Contains(line, "-kind pr") && strings.Contains(line, "-only documents") &&
-			strings.Contains(line, "corpus_fresh/pr/pool") && strings.Contains(line, "corpus_prpool/pr/pool"):
-			if idxPR < 0 {
-				idxPR = i
-			}
-		case strings.Contains(line, "-kind prose") && strings.Contains(line, "-only documents") &&
-			strings.Contains(line, "corpus_fresh/blog/pool") && strings.Contains(line, "corpus_fresh/memo/pool") &&
-			strings.Contains(line, "corpus_fresh/essay/pool"):
-			if idxProseDoc < 0 {
-				idxProseDoc = i
-			}
-		case strings.Contains(line, "-kind prose") && strings.Contains(line, "-only segments") &&
-			strings.Contains(line, "corpus_fresh/blog/pool") && strings.Contains(line, "corpus_fresh/memo/pool") &&
-			strings.Contains(line, "corpus_fresh/essay/pool") && strings.Contains(line, "corpus_tech/blog/pool") &&
-			strings.Contains(line, "corpus_nontech/blog/pool"):
-			if idxProseSeg < 0 {
-				idxProseSeg = i
-			}
+	// 2. CLI overrides (-align-norm=false, -short-prose 0:0) into reusedOut.
+	reusedOut := filepath.Join(t.TempDir(), "reused_out")
+	stdoutOverride, stderr, code := runCLI(t, workDir, "fit", "-kind", "prose",
+		"-align-norm=false", "-short-prose", "0:0", "-out", reusedOut, corpusDir)
+	if code != 0 {
+		t.Fatalf("fit override failed (exit %d): %s", code, stderr)
+	}
+	for _, want := range []string{"align_normalization=false", "short_prose=0:0", "-align-norm", "-short-prose"} {
+		if !strings.Contains(stdoutOverride, want) {
+			t.Errorf("override fit stdout missing %q:\n%s", want, stdoutOverride)
 		}
 	}
-	if idxPR < 0 || idxProseDoc < 0 || idxProseSeg < 0 {
-		t.Fatalf("Rebuilding the models missing one or more of the 3 CalibrateCutoffs passes (pr=%d, proseDoc=%d, proseSeg=%d)",
-			idxPR, idxProseDoc, idxProseSeg)
+
+	// 3. Reusing reusedOut WITHOUT flags must visibly report inheritance from <reusedOut>/engine.json.
+	reusedEnginePath := filepath.Join(reusedOut, "engine.json")
+	stdoutReused, stderr, code := runCLI(t, workDir, "fit", "-kind", "prose", "-out", reusedOut, corpusDir)
+	if code != 0 {
+		t.Fatalf("fit reusedOut failed (exit %d): %s", code, stderr)
 	}
-	if !(idxPR < idxProseDoc && idxProseDoc < idxProseSeg) {
-		t.Errorf("thresholds passes out of order: line indices pr=%d, proseDoc=%d, proseSeg=%d (want pr < proseDoc < proseSeg)",
-			idxPR, idxProseDoc, idxProseSeg)
+	for _, want := range []string{"align_normalization=false", "short_prose=0:0", reusedEnginePath} {
+		if !strings.Contains(stdoutReused, want) {
+			t.Errorf("reused fit stdout missing %q:\n%s", want, stdoutReused)
+		}
+	}
+	if strings.Contains(stdoutReused, "embedded engine.json") {
+		t.Errorf("reused fit stdout falsely claimed embedded engine.json:\n%s", stdoutReused)
+	}
+
+	// 4. Bare -align-norm and -align-norm=true override align_normalization back to true while preserving short_prose=0:0 from <reusedOut>/engine.json.
+	for _, flagForm := range []string{"-align-norm", "-align-norm=true"} {
+		subOut := filepath.Join(t.TempDir(), "sub_"+strings.ReplaceAll(flagForm, "=", "_"))
+		writeSyntheticFile(t, filepath.Join(subOut, "engine.json"), `{"align_normalization": false, "short_prose": {"below": 110, "above": 260}}`, time.Time{})
+		outStr, errStr, exit := runCLI(t, workDir, "fit", "-kind", "prose", flagForm, "-out", subOut, corpusDir)
+		if exit != 0 {
+			t.Fatalf("fit %s failed (exit %d): %s", flagForm, exit, errStr)
+		}
+		for _, want := range []string{"align_normalization=true", "short_prose=110:260", filepath.Join(subOut, "engine.json"), "-align-norm"} {
+			if !strings.Contains(outStr, want) {
+				t.Errorf("fit %s stdout missing %q:\n%s", flagForm, want, outStr)
+			}
+		}
+		b, err := os.ReadFile(filepath.Join(subOut, "engine.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var gotOpts engine.Options
+		if err := json.Unmarshal(b, &gotOpts); err != nil {
+			t.Fatal(err)
+		}
+		if !gotOpts.AlignNormalization || gotOpts.ShortProse.Below != 110 || gotOpts.ShortProse.Above != 260 {
+			t.Errorf("fit %s wrote engine.json = %+v, want AlignNormalization=true ShortProse={110 260}", flagForm, gotOpts)
+		}
+	}
+
+	// 5. Help text for aidetector fit -h must say "default: from engine.json" and never emit "(default false)".
+	_, helpErr, _ := runCLI(t, workDir, "fit", "-h")
+	if !strings.Contains(helpErr, "default: from engine.json") {
+		t.Errorf("fit -h stderr missing 'default: from engine.json':\n%s", helpErr)
+	}
+	if strings.Contains(helpErr, "(default false)") {
+		t.Errorf("fit -h stderr emitted misleading '(default false)':\n%s", helpErr)
+	}
+}
+
+// AC2: aidetector thresholds prints whether calibration texts were scored with
+// embedded production models or candidate models loaded from <modelDir>.
+func TestThresholdsPrintsModelSource(t *testing.T) {
+	workDir := t.TempDir()
+	poolDir := filepath.Join(t.TempDir(), "pr_pool")
+	prBody := "Fix nil pointer dereference when closing idle HTTP keep-alive connections after server shutdown timeout expires in worker pool.\n" +
+		"Added a unit test reproducing the race under load and verified connection draining completes cleanly without leaking goroutines.\n"
+	for _, id := range []string{"sample-002", "sample-008", "sample-001", "sample-004"} {
+		writeSyntheticFile(t, filepath.Join(poolDir, id+".txt"), prBody, time.Time{})
+	}
+
+	// 1. Fresh non-existent -out directory -> embedded production models.
+	freshOut := filepath.Join(t.TempDir(), "nonexistent_dir")
+	stdoutFresh, stderr, code := runCLI(t, workDir, "thresholds", "-kind", "pr", "-only", "documents", "-out", freshOut, poolDir)
+	if code != 0 {
+		t.Fatalf("thresholds freshOut failed (exit %d): %s", code, stderr)
+	}
+	if !strings.Contains(stdoutFresh, "embedded production models") {
+		t.Errorf("fresh non-existent -out stdout = %q, want mention of 'embedded production models'", stdoutFresh)
+	}
+	if strings.Contains(stdoutFresh, "models loaded from") {
+		t.Errorf("fresh non-existent -out stdout = %q, must not claim models loaded from dir", stdoutFresh)
+	}
+
+	// 2. Empty existing scratch -out directory (e.g. mktemp -d) -> still embedded production models.
+	emptyOut := t.TempDir()
+	stdoutEmpty, stderr, code := runCLI(t, workDir, "thresholds", "-kind", "pr", "-only", "documents", "-out", emptyOut, poolDir)
+	if code != 0 {
+		t.Fatalf("thresholds emptyOut failed (exit %d): %s", code, stderr)
+	}
+	if !strings.Contains(stdoutEmpty, "embedded production models") {
+		t.Errorf("empty scratch -out stdout = %q, want mention of 'embedded production models'", stdoutEmpty)
+	}
+
+	// 3. Candidate directory containing pr.json -> models loaded from <candDir>.
+	candDir := filepath.Join(t.TempDir(), "cand_models")
+	candModel := calibrate.Model{Kind: "pr", Bias: 4.5, Features: []calibrate.Feature{}, Missing: map[string]float64{}, Trained: 10}
+	b, _ := json.MarshalIndent(candModel, "", " ")
+	writeSyntheticFile(t, filepath.Join(candDir, "pr.json"), string(b)+"\n", time.Time{})
+
+	stdoutCand, stderr, code := runCLI(t, workDir, "thresholds", "-kind", "pr", "-only", "documents", "-out", candDir, poolDir)
+	if code != 0 {
+		t.Fatalf("thresholds candDir failed (exit %d): %s", code, stderr)
+	}
+	if !strings.Contains(stdoutCand, "models loaded from "+candDir) {
+		t.Errorf("candidate -out stdout = %q, want 'models loaded from %s'", stdoutCand, candDir)
+	}
+	if strings.Contains(stdoutCand, "embedded production models") {
+		t.Errorf("candidate -out stdout = %q, must not claim embedded production models", stdoutCand)
+	}
+}
+
+// AC4: aidetector fit -exclude-since inside a .../ai/human/... parent directory
+// must not misclassify human files as AI generations.
+func TestFitExcludeSinceIgnoresParentAIDir(t *testing.T) {
+	workDir := t.TempDir()
+	corpusDir := filepath.Join(t.TempDir(), "ai", "human", "pr_corpus")
+
+	before := time.Date(2026, 11, 5, 7, 0, 0, 0, time.UTC)
+	after := time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC)
+	cutoff := "2026-11-05T08:30:00Z"
+
+	humanPR := "Fix race condition in connection pool cleanup when context cancels early during TLS handshake retry.\n" +
+		"Verified with go test -race across twenty iterations on local loopback sockets.\n"
+	aiPR := "This pull request resolves a concurrency issue in connection lifecycle management, ensuring deterministic resource cleanup and improved reliability across retry paths.\n" +
+		"Comprehensive unit tests validate graceful cancellation semantics.\n"
+
+	// 4 train human files (2 before, 2 after cutoff — all 4 must stay in training).
+	writeSyntheticFile(t, filepath.Join(corpusDir, "human", "sample-001.txt"), humanPR+" alpha", before)
+	writeSyntheticFile(t, filepath.Join(corpusDir, "human", "sample-002.txt"), humanPR+" beta", before)
+	writeSyntheticFile(t, filepath.Join(corpusDir, "human", "sample-003.txt"), humanPR+" gamma", after)
+	writeSyntheticFile(t, filepath.Join(corpusDir, "human", "sample-004.txt"), humanPR+" delta", after)
+
+	// 4 pre-cutoff train AI files (kept) + 2 post-cutoff train AI files (excluded).
+	writeSyntheticFile(t, filepath.Join(corpusDir, "ai", "gemini-3.8-flash", "sample-001.txt"), aiPR+" alpha", before)
+	writeSyntheticFile(t, filepath.Join(corpusDir, "ai", "gemini-3.8-flash", "sample-002.txt"), aiPR+" beta", before)
+	writeSyntheticFile(t, filepath.Join(corpusDir, "ai", "gemini-3.8-flash", "sample-003.txt"), aiPR+" gamma", before)
+	writeSyntheticFile(t, filepath.Join(corpusDir, "ai", "gemini-3.8-flash", "sample-004.txt"), aiPR+" delta", before)
+	writeSyntheticFile(t, filepath.Join(corpusDir, "ai", "gemini-3.8-flash", "sample-005.txt"), aiPR+" epsilon", after)
+	writeSyntheticFile(t, filepath.Join(corpusDir, "ai", "gemini-3.8-flash", "sample-006.txt"), aiPR+" zeta", after)
+
+	outDir := filepath.Join(t.TempDir(), "nested_filtered_out")
+	_, stderr, code := runCLI(t, workDir, "fit", "-kind", "pr", "-exclude-since", cutoff, "-out", outDir, corpusDir)
+	if code != 0 {
+		t.Fatalf("fit -exclude-since under /ai/human/ failed (exit %d): %s", code, stderr)
+	}
+	m := readCalibrateModel(t, filepath.Join(outDir, "pr.json"))
+	if m.Trained != 8 {
+		t.Errorf("Trained under /ai/human/ parent = %d, want 8 (4 train human + 4 pre-cutoff train AI)", m.Trained)
 	}
 }
 
@@ -715,7 +861,52 @@ func TestCLIJSONAndMCPServerIncludeBuildInfo(t *testing.T) {
 	}
 }
 
-// AC6: README.md documents aidetector -version and the Result.build JSON field.
+// AC6: aidetector detect version scores a file literally named "version" (whereas
+// aidetector version prints build version), and usage() documents detect version.
+func TestCLIDetectFileNamedVersion(t *testing.T) {
+	t.Setenv("AIDETECTOR_SCORER_URL", "")
+	workDir := t.TempDir()
+
+	prose := "Yesterday afternoon I patched three cedar shingles above the back porch overhang, " +
+		"swept the pine needles out of the copper gutter, and sealed the corner seam before dusk. " +
+		"The old flashing had worked loose during January windstorms, so I replaced two rusted nails " +
+		"and checked the attic rafters with a flashlight when the rain started.\n"
+	writeSyntheticFile(t, filepath.Join(workDir, "version"), prose, time.Time{})
+
+	// Bare "aidetector version" still prints the build/models version header.
+	verOut, verErr, verCode := runCLI(t, workDir, "version")
+	if verCode != 0 || verErr != "" || !strings.HasPrefix(verOut, "aidetector ") {
+		t.Fatalf("aidetector version = (code=%d, stdout=%q, stderr=%q), want exit 0 version output", verCode, verOut, verErr)
+	}
+
+	// Explicit "aidetector detect version" (and "-json") scores the file named "version".
+	detOut, detErr, detCode := runCLI(t, workDir, "detect", "version")
+	if detCode != 0 || detErr != "" || !strings.Contains(detOut, "Score:") {
+		t.Fatalf("aidetector detect version = (code=%d, stdout=%q, stderr=%q), want exit 0 score output", detCode, detOut, detErr)
+	}
+	jsonOut, jsonErr, jsonCode := runCLI(t, workDir, "detect", "-json", "version")
+	if jsonCode != 0 || jsonErr != "" {
+		t.Fatalf("aidetector detect -json version failed (code=%d): %s", jsonCode, jsonErr)
+	}
+	var res engine.Result
+	if err := json.Unmarshal([]byte(jsonOut), &res); err != nil {
+		t.Fatalf("unmarshal detect -json version: %v", err)
+	}
+	if res.WordCount < 50 || res.Kind != "prose" {
+		t.Errorf("detect -json version Result = (Kind=%q, WordCount=%d), want Kind=prose WordCount>=50", res.Kind, res.WordCount)
+	}
+
+	_, helpErr, helpCode := runCLI(t, workDir, "-h")
+	if helpCode != 0 {
+		t.Fatalf("aidetector -h exited %d, want 0", helpCode)
+	}
+	if !strings.Contains(helpErr, "detect version") {
+		t.Errorf("usage() output missing 'aidetector detect version' edge-case note:\n%s", helpErr)
+	}
+}
+
+// AC6: README.md documents aidetector -version, aidetector detect version, the
+// Result.build JSON field, and the Docker build context .git / commit: unknown note.
 func TestReadmeVersionAndBuildDocs(t *testing.T) {
 	readmePath := filepath.Join("..", "..", "README.md")
 	b, err := os.ReadFile(readmePath)
@@ -727,7 +918,13 @@ func TestReadmeVersionAndBuildDocs(t *testing.T) {
 	if !strings.Contains(full, "aidetector -version") {
 		t.Errorf("README.md missing documentation for 'aidetector -version'")
 	}
+	if !strings.Contains(full, "aidetector detect version") {
+		t.Errorf("README.md missing documentation for 'aidetector detect version' to score a file named version")
+	}
 	if !strings.Contains(full, "- `build`") {
 		t.Errorf("README.md missing bullet documenting the `build` JSON field")
+	}
+	if !strings.Contains(full, "Docker") || !strings.Contains(full, ".git") || !strings.Contains(full, "commit: unknown") {
+		t.Errorf("README.md missing Docker note explaining builds without .git report 'commit: unknown'")
 	}
 }

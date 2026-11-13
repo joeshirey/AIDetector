@@ -54,7 +54,7 @@ There are two MCP tools:
 From the command line:
 
 ```sh
-aidetector post.md                    # score a file
+aidetector post.md                    # score a file (aidetector detect version for a file named version)
 pbpaste | aidetector -kind prose      # score the clipboard
 aidetector -version                   # build version and loaded-models digest
 ```
@@ -101,7 +101,9 @@ You also get:
 - `build` in JSON and MCP results: the binary `version`, short git `commit`
   (with `-dirty` if modified), `go_version`, and `models` (`"sha256:..."` over
   the loaded model files), so a saved score can be traced back to the exact
-  build and models that produced it.
+  build and models that produced it. Docker builds without `.git` in the build
+  context report `commit: unknown`; include `.git` or rely on the `models`
+  digest.
 
 Prose has to be at least 50 words and PR descriptions at least 25. Anything
 shorter comes back as "too short to judge", because the models never saw text

@@ -83,18 +83,16 @@ func (d Data) frozenDirs(k detect.Kind) []string {
 
 // onlyGens keeps human files and AI files from generator dirs matching match.
 func onlyGens(match func(gen string) bool) eval.Keep {
-	sep := string(filepath.Separator)
 	return func(path, id string) bool {
-		if strings.Contains(path, sep+"human"+sep) {
+		role, gen := split.PathRole(path)
+		switch role {
+		case "human":
 			return true
+		case "ai":
+			return gen != "" && match(gen)
+		default:
+			return false
 		}
-		parts := strings.Split(path, sep)
-		for i := len(parts) - 2; i >= 0; i-- { // the last "ai" component, so parent folders can't fool it
-			if parts[i] == "ai" {
-				return match(parts[i+1])
-			}
-		}
-		return false
 	}
 }
 

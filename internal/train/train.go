@@ -234,7 +234,7 @@ func sampleWeights(samples []eval.Sample, mode string) []float64 {
 	group := func(s eval.Sample) string {
 		root := s.Path
 		for _, d := range []string{sep + "human" + sep, sep + "ai" + sep} {
-			if i := strings.Index(root, d); i >= 0 {
+			if i := strings.LastIndex(root, d); i >= 0 {
 				root = root[:i]
 				break
 			}

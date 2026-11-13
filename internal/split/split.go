@@ -52,3 +52,30 @@ func Base(id string) string {
 	}
 	return id
 }
+
+// PathRole classifies a corpus file path by its directory layout relative to
+// the filename (`.../human/<file>` vs `.../ai/<generator>/<file>`), ignoring
+// any ancestor directories that happen to be named "ai" or "human".
+// Reserve pools (`pool/`) and eval-only variant directories (`ai_edited/`,
+// `ai_polished/`, `ai_humanized/`) return ("", "").
+func PathRole(path string) (role, gen string) {
+	norm := strings.TrimRight(strings.ReplaceAll(path, "\\", "/"), "/")
+	parts := strings.Split(norm, "/")
+	n := len(parts)
+	if n < 2 {
+		return "", ""
+	}
+	parent := parts[n-2]
+	switch {
+	case parent == "human":
+		return "human", ""
+	case parent == "pool" || parent == "src" || parent == "poolsrc":
+		return "", ""
+	case parent == "ai":
+		return "ai", ""
+	case n >= 3 && parts[n-3] == "ai":
+		return "ai", parent
+	default:
+		return "", ""
+	}
+}
