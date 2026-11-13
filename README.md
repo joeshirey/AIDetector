@@ -127,7 +127,9 @@ Opus and Sonnet 5.5 98 to 99%. Open-weight families the detector has never
 seen do about as well (Gemma 4 99%, Phi-4 97%, Mistral Small 4 98%), with
 one exception: Llama. Llama 3.3 70B and Llama 4 Scout come in at 87% on
 prose and lower on PRs. Training on Llama text closed most of that gap but
-flagged more human writing at every dose tried, so it's an open problem.
+flagged more human writing at every dose tried. For prose, the optional
+local scorer closes most of it instead (94 to 95%; see "Optional:
+token-probability scoring" below).
 
 For false positives I used fresh human text. None of it was in training and
 this half wasn't used to pick the cutoffs either. The PRs are from 105 repos
@@ -607,23 +609,42 @@ version for every train-split human text that has none (by default Argon 2
 : Flash 1, `-pair-gens` to change, `-plan` to estimate). The next run
 collects and trains on them.
 
-## Experimental: Binoculars scoring
+## Optional: token-probability scoring
 
 `scorer/server.py` is a small service you run yourself. It loads a base model
-along with its instruct version (Qwen3-8B, using MLX on Apple Silicon). For
-each text it reports log-perplexity, the Binoculars ratio, and Fast-DetectGPT
-curvature. I was hoping for a signal that didn't care which company's model
-wrote the text.
+along with its instruct version (Qwen3-8B, 8-bit, using MLX on Apple Silicon;
+about 17 GB). For each text it reports log-perplexity, the Binoculars ratio,
+and Fast-DetectGPT curvature: signals that don't depend on which company's
+model wrote the text.
 
-It didn't help much. AUROC on held-out model families went up by 0.02 to 0.03.
-On the test split it didn't change at all. I haven't shipped any models
-trained with it. The binaries ignore it unless you fit those yourself (the
-script's docstring has more).
+When `AIDETECTOR_SCORER_URL` points at a running scorer, prose is scored with
+a model fitted with those signals (`prose.lm.json`, with its own word-pattern
+model and cutoffs). PR descriptions keep the regular model; with the scorer,
+they caught more AI text but flagged more human PRs on the final holdout.
+Without the scorer nothing changes. The `scorer` field in a result says
+whether it was used.
+
+Measured on 2026-11-12, prose with the scorer against the regular model:
+
+| | Regular | With scorer |
+|---|---|---|
+| Test split, AI caught at 1% of human flagged | 95.5% | 96.3% |
+| Llama 3.3 70B (frozen set, never trained on) | 86.7% | 95.0% |
+| Llama 4 Scout (frozen set, never trained on) | 86.3% | 94.3% |
+| Final holdout human texts at 60+ (398 documents) | 2 | 0 |
+
+The cutoffs were calibrated for this exact model pair, so use it rather than
+another size or precision:
 
 ```sh
-uv run scorer/server.py --observer mlx-community/Qwen3-8B-Base-bf16 --performer mlx-community/Qwen3-8B-bf16
+uv run scorer/server.py --observer ~/.cache/aidetector/models/Qwen3-8B-Base-8bit --performer mlx-community/Qwen3-8B-8bit
 export AIDETECTOR_SCORER_URL=http://127.0.0.1:8765
-bin/aidetector fit -lm -kind prose -out "$OUT" corpus/blog corpus/memo corpus/essay   # writes prose.lm.json and prose.lm.ngram.json (<kind>.lm.json and <kind>.lm.ngram.json)
+```
+
+The script's docstring explains how to make the 8-bit base model. To refit:
+
+```sh
+bin/aidetector fit -lm -kind prose -out "$OUT" corpus/blog corpus/memo corpus/essay   # writes prose.lm.json and prose.lm.ngram.json
 ```
 
 ## Layout
@@ -638,7 +659,7 @@ internal/calibrate    logistic regression for the final model
 internal/train        fitting and cutoff calibration (shared by the CLI and the overnight loop)
 internal/overnight    the overnight loop: bandit, batch jobs, frozen sets, gate, report
 internal/setup        client setup and the embedded skill
-scorer/               experimental Binoculars service (Python, MLX)
+scorer/               optional token-probability scorer (Python, MLX)
 ```
 
 ## Credits

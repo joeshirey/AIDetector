@@ -1,0 +1,351 @@
+{
+ "kind": "prose",
+ "bias": 2.162983477672192,
+ "features": [
+  {
+   "name": "ai_phrases",
+   "mean": 0.5078563495371747,
+   "std": 1.6922703182884162,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "ai_vocabulary",
+   "mean": 1.6721676451958356,
+   "std": 3.881225377801807,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "arguing_with_no_one",
+   "mean": 0.02466275386672113,
+   "std": 0.29141570594233873,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "bold_lead_bullets",
+   "mean": 0,
+   "std": 1,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "chatbot_phrases",
+   "mean": 0.02696059405802437,
+   "std": 0.46130607473775476,
+   "weight": 0.002834590628776193,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "copula_avoidance",
+   "mean": 0.07266814832802591,
+   "std": 0.5861154409284215,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "corporate_verbs",
+   "mean": 0.25272214153531086,
+   "std": 1.109803578880857,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "deep_sayings",
+   "mean": 0.0716148955570157,
+   "std": 0.44365242277830974,
+   "weight": 0.0011508145787670965,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "em_dashes",
+   "mean": 1.5397881552368948,
+   "std": 3.258202878665802,
+   "weight": 0.02731481031647009,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "human_markers",
+   "mean": 1.2975161160850177,
+   "std": 2.67279091399172,
+   "weight": -0.04224907995086872,
+   "human_median": 0.7032348804500703,
+   "ai_median": 0
+  },
+  {
+   "name": "inflated_significance",
+   "mean": 0.00909510682931633,
+   "std": 0.16100775209946883,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "ing_riders",
+   "mean": 0.09623380804885982,
+   "std": 0.6887910817917662,
+   "weight": 0.05525492165465309,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "knowledge_disclaimers",
+   "mean": 0.0005922212551827449,
+   "std": 0.027842269972779384,
+   "weight": 0.012501393624695592,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "lexical_diversity",
+   "mean": 0.7600149048788094,
+   "std": 0.05694749848202448,
+   "weight": 0.2971727205894176,
+   "human_median": 0.71,
+   "ai_median": 0.775897435897436
+  },
+  {
+   "name": "lm_binoculars",
+   "mean": 1.159279036165921,
+   "std": 0.10606219481642522,
+   "weight": 0.28024939669294713,
+   "human_median": 1.1279039318173425,
+   "ai_median": 1.1474299616442991
+  },
+  {
+   "name": "lm_curvature",
+   "mean": -2.8202000098241897,
+   "std": 1.525350622558687,
+   "weight": 0,
+   "human_median": -2.6595642253669296,
+   "ai_median": -2.8413649189153043
+  },
+  {
+   "name": "lm_log_ppl",
+   "mean": 3.24576750708378,
+   "std": 0.5664382191622312,
+   "weight": -0.5011394700140496,
+   "human_median": 3.3230538368225098,
+   "ai_median": 3.153637170791626
+  },
+  {
+   "name": "log_words",
+   "mean": 5.696280204920298,
+   "std": 0.861163067482627,
+   "weight": -0.2273523818115604,
+   "human_median": 390,
+   "ai_median": 291
+  },
+  {
+   "name": "mtld",
+   "mean": 140.10509353274713,
+   "std": 57.011215084676905,
+   "weight": 0.30535260996474894,
+   "human_median": 88.18276911373145,
+   "ai_median": 141.77828240919104
+  },
+  {
+   "name": "negative_parallelism",
+   "mean": 0.6976706499445301,
+   "std": 1.6798428177441203,
+   "weight": 0.008531056209626907,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "one_line_paragraphs",
+   "mean": 0.1624403979828413,
+   "std": 0.17565743222636024,
+   "weight": -0.26283496953674995,
+   "human_median": 0.25,
+   "ai_median": 0.1111111111111111
+  },
+  {
+   "name": "paragraph_uniformity",
+   "mean": 0.40200974296363234,
+   "std": 0.1784660554787857,
+   "weight": 0,
+   "human_median": 0.48164439311351487,
+   "ai_median": 0.376728125396296
+  },
+  {
+   "name": "punctuation_variety",
+   "mean": 0.13673524504384996,
+   "std": 0.12322545350289756,
+   "weight": 0,
+   "human_median": 0.16091954022988506,
+   "ai_median": 0.1
+  },
+  {
+   "name": "repeated_openings",
+   "mean": 0.03596235903651252,
+   "std": 0.061873583671818694,
+   "weight": -0.022874270849123725,
+   "human_median": 0.03225806451612903,
+   "ai_median": 0
+  },
+  {
+   "name": "rule_of_three",
+   "mean": 0.06544995417653143,
+   "std": 0.07430347517244283,
+   "weight": 0.025415788368215238,
+   "human_median": 0.019230769230769232,
+   "ai_median": 0.05454545454545454
+  },
+  {
+   "name": "sales_language",
+   "mean": 0.0655640437600688,
+   "std": 0.6619894204293925,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "sentence_band",
+   "mean": 0.5613481329009956,
+   "std": 0.1552276717696799,
+   "weight": 0.18867207859359414,
+   "human_median": 0.5111111111111111,
+   "ai_median": 0.5714285714285714
+  },
+  {
+   "name": "sentence_burstiness",
+   "mean": 0.47433039380410247,
+   "std": 0.13696166284993053,
+   "weight": -0.2042661131237461,
+   "human_median": 0.5408906119535031,
+   "ai_median": 0.4509232285367726
+  },
+  {
+   "name": "signposts",
+   "mean": 0.8191120843734603,
+   "std": 2.606448647372236,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "stacked_qualifiers",
+   "mean": 0.011092280268552874,
+   "std": 0.17133046471511332,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "staged_runup",
+   "mean": 0.03657321494218505,
+   "std": 0.36625513217992256,
+   "weight": 0.07108621952645257,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "stock_closers",
+   "mean": 0.0058267287221402606,
+   "std": 0.14784245923294817,
+   "weight": 0.011730177259969395,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "vague_association",
+   "mean": 0.014607097291300462,
+   "std": 0.21966075055937986,
+   "weight": -0.016163299918466007,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "vocab_2023",
+   "mean": 0.335017912628769,
+   "std": 1.3807900211734445,
+   "weight": 0,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "vocab_2024",
+   "mean": 0.45946840618984797,
+   "std": 1.7113699947420316,
+   "weight": 0.0014535894727946662,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "vocab_2026",
+   "mean": 1.1066760664146063,
+   "std": 2.481034978994135,
+   "weight": 0.07077181003602868,
+   "human_median": 0,
+   "ai_median": 0
+  },
+  {
+   "name": "word_patterns",
+   "mean": 1.2383549823181346,
+   "std": 2.201308370555069,
+   "weight": 2.64265923209191,
+   "human_median": -2.3468872207942253,
+   "ai_median": 2.0867883428184055
+  },
+  {
+   "name": "yules_k",
+   "mean": 86.75938656393019,
+   "std": 29.049886073783274,
+   "weight": -0.08800712559099351,
+   "human_median": 98.71441689623508,
+   "ai_median": 78.60659814786871
+  }
+ ],
+ "missing": {
+  "ai_phrases": -0.05704093555273019,
+  "ai_vocabulary": -0.05704093555273019,
+  "arguing_with_no_one": -0.05704093555273019,
+  "bold_lead_bullets": -0.09908212223135199,
+  "chatbot_phrases": -0.05704093555273019,
+  "copula_avoidance": -0.05704093555273019,
+  "corporate_verbs": -0.05704093555273019,
+  "deep_sayings": -0.05704093555273019,
+  "em_dashes": -0.05704093555273019,
+  "human_markers": -0.05704093555273019,
+  "inflated_significance": -0.05704093555273019,
+  "ing_riders": -0.05704093555273019,
+  "knowledge_disclaimers": -0.05704093555273019,
+  "lexical_diversity": -0.036197873316794964,
+  "lm_binoculars": -0.053629576907296854,
+  "lm_curvature": -0.053629576907296854,
+  "lm_log_ppl": -0.053629576907296854,
+  "log_words": 0,
+  "mtld": -0.036197873316794964,
+  "negative_parallelism": -0.05704093555273019,
+  "one_line_paragraphs": -0.16018212370403045,
+  "paragraph_uniformity": 0.024402309102771077,
+  "punctuation_variety": -0.12783649242381434,
+  "repeated_openings": 0.07131480480024449,
+  "rule_of_three": -0.020215555763081084,
+  "sales_language": -0.05704093555273019,
+  "sentence_band": -0.020215555763081084,
+  "sentence_burstiness": -0.020215555763081084,
+  "signposts": -0.05704093555273019,
+  "stacked_qualifiers": -0.05704093555273019,
+  "staged_runup": -0.05704093555273019,
+  "stock_closers": -0.05704093555273019,
+  "vague_association": -0.05704093555273019,
+  "vocab_2023": -0.05704093555273019,
+  "vocab_2024": -0.05704093555273019,
+  "vocab_2026": -0.05704093555273019,
+  "word_patterns": 0,
+  "yules_k": -0.036197873316794964
+ },
+ "trained_on": 17293
+}

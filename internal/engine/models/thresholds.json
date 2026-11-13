@@ -17,6 +17,24 @@
   "human_at_ai": 0.005931198102016607,
   "calibrated_on": 793
  },
+ "prose.lm": {
+  "mixed": 25,
+  "likely_ai": 47,
+  "ai": 65,
+  "human_at_mixed": 0.03795966785290629,
+  "human_at_likely_ai": 0.00830367734282325,
+  "human_at_ai": 0.002372479240806643,
+  "calibrated_on": 793
+ },
+ "prose.lm.segment": {
+  "mixed": 54,
+  "likely_ai": 75,
+  "ai": 76,
+  "human_at_mixed": 0.02045977011494253,
+  "human_at_likely_ai": 0.004367816091954023,
+  "human_at_ai": 0.003908045977011494,
+  "calibrated_on": 4262
+ },
  "prose.segment": {
   "mixed": 55,
   "likely_ai": 77,
