@@ -638,10 +638,10 @@ func (e *Engine) reasons(k detect.Kind, signals []detect.Signal, words int) []Re
 		out = out[:8]
 	}
 	if m != nil {
-		// Make the listed log-odds add up to the model's: the starting point
-		// (the score of a text that's average on every signal; the training
-		// data leans AI, so it's usually well above 0) plus everything too
-		// small or too contradictory to list.
+		// Make the listed log-odds add up to the model's: the model intercept
+		// (measured at the training-set average, which is mostly AI text; a
+		// reference point, not a prior on the score) plus everything too small
+		// or too contradictory to list.
 		shown := 0.0
 		for _, r := range out {
 			if contrib[r.Signal] {
@@ -656,7 +656,7 @@ func (e *Engine) reasons(k detect.Kind, signals []detect.Signal, words int) []Re
 		}
 		out = append(out,
 			Reason{Signal: "baseline", Direction: dir(m.Bias), Impact: "baseline", Logit: m.Bias,
-				Detail: fmt.Sprintf("starting point: a text that's average on every signal would get %.0f%% from the model before the signals above move it", 100/(1+math.Exp(-m.Bias)))},
+				Detail: fmt.Sprintf("model intercept (%+.2f log-odds), measured from the training-set average, where the training set is mostly AI text. Reference point only, not a prior applied to the score; labels come from cutoffs calibrated on human text", m.Bias)},
 			Reason{Signal: "other_signals", Direction: dir(total - m.Bias - shown), Impact: "other", Logit: total - m.Bias - shown,
 				Detail: "all remaining signals combined (each too small to list, or pointing against its typical value)"})
 	}

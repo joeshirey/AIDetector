@@ -81,9 +81,10 @@ You also get:
 - `reasons`: what moved the score, strongest first. Each one has a
   direction and a size (in log-odds). Most also show typical values for
   human and AI text. Two closing lines make the sizes add up to the score:
-  `baseline`, the model's starting point for a text that's average on every
-  signal (usually well toward AI, since the training data leans that way),
-  and `other_signals`, everything too small to list.
+  `baseline`, the model's intercept measured from the training-set average,
+  where the training set is mostly AI text (a log-odds reference point, not a
+  prior on the score; labels come from cutoffs calibrated on human text), and
+  `other_signals`, everything too small to list.
 - `segments` and `ai_fraction` for long prose. These score the text in
   chunks of about 200 words (handy when only part of a document is AI).
   Short chunks swing more than whole documents, so segments have their own

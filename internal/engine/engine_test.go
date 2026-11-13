@@ -418,3 +418,135 @@ func TestReasonsAddUp(t *testing.T) {
 		t.Errorf("reasons sum to %.3f log-odds, raw score is %.3f", sum, want)
 	}
 }
+
+func TestBaselineReasonWording(t *testing.T) {
+	e := Default()
+	cases := []struct {
+		name string
+		kind detect.Kind
+		text string
+	}{
+		{
+			name: "prose",
+			kind: detect.KindProse,
+			text: "I spent the weekend fixing the fence, which had been leaning for years. The posts were rotten at the base, so I dug them out one by one and set new ones in concrete. It took longer than I expected, mostly because the old concrete footings were huge. By Sunday night my back hurt, but the fence stood straight for the first time since we bought the house. Next spring I want to paint it, though my wife thinks we should just let it weather.",
+		},
+		{
+			name: "pr",
+			kind: detect.KindPR,
+			text: "## Summary\n\nFix a nil pointer dereference in the configuration loader when the file is empty on startup, and return a clear error to the caller instead of crashing during initialization. Tested locally with an empty path and a missing directory.",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := e.models[tc.kind]
+			if m == nil {
+				t.Fatalf("missing embedded model for %s", tc.kind)
+			}
+			res, err := e.Analyze(context.Background(), detect.Input{Text: tc.text, Kind: tc.kind})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Label == TooShort {
+				t.Fatalf("unexpected %q label (%d words)", res.Label, res.WordCount)
+			}
+
+			var (
+				base, other            Reason
+				baseCount, otherCount  int
+				shownLogit, totalLogit float64
+			)
+			for _, r := range res.Reasons {
+				if r.Direction == "info" || r.Direction == "warning" || r.Impact == "decisive" {
+					continue
+				}
+				totalLogit += r.Logit
+				switch r.Signal {
+				case "baseline":
+					base = r
+					baseCount++
+				case "other_signals":
+					other = r
+					otherCount++
+				default:
+					shownLogit += r.Logit
+				}
+			}
+
+			if baseCount != 1 {
+				t.Fatalf("got %d baseline reasons, want 1", baseCount)
+			}
+			if otherCount != 1 {
+				t.Fatalf("got %d other_signals reasons, want 1", otherCount)
+			}
+
+			wantTotal := math.Log(res.Raw / (100 - res.Raw))
+			if math.Abs(totalLogit-wantTotal) > 0.01 {
+				t.Errorf("reasons sum to %.4f log-odds, raw score log-odds is %.4f", totalLogit, wantTotal)
+			}
+
+			wantDir := func(x float64) string {
+				if x > 0 {
+					return "AI"
+				}
+				return "human"
+			}
+			if base.Impact != "baseline" {
+				t.Errorf("baseline.Impact = %q, want %q", base.Impact, "baseline")
+			}
+			if base.Direction != wantDir(m.Bias) {
+				t.Errorf("baseline.Direction = %q, want %q", base.Direction, wantDir(m.Bias))
+			}
+			if math.Abs(base.Logit-m.Bias) > 1e-12 {
+				t.Errorf("baseline.Logit = %v, want m.Bias %v", base.Logit, m.Bias)
+			}
+
+			wantOther := wantTotal - m.Bias - shownLogit
+			if other.Impact != "other" {
+				t.Errorf("other_signals.Impact = %q, want %q", other.Impact, "other")
+			}
+			if other.Direction != wantDir(other.Logit) {
+				t.Errorf("other_signals.Direction = %q, want %q", other.Direction, wantDir(other.Logit))
+			}
+			if math.Abs(other.Logit-wantOther) > 1e-6 {
+				t.Errorf("other_signals.Logit = %v, want %v", other.Logit, wantOther)
+			}
+			const wantOtherDetail = "all remaining signals combined (each too small to list, or pointing against its typical value)"
+			if other.Detail != wantOtherDetail {
+				t.Errorf("other_signals.Detail = %q, want %q", other.Detail, wantOtherDetail)
+			}
+
+			detail := strings.TrimSpace(base.Detail)
+			lower := strings.ToLower(detail)
+			for _, forbidden := range []string{"starting point", "would get", "starting probability", "%"} {
+				if strings.Contains(lower, forbidden) {
+					t.Errorf("baseline.Detail must not claim a starting probability (found %q): %q", forbidden, detail)
+				}
+			}
+			for _, required := range []string{
+				"intercept",
+				"training",
+				"average",
+				"mostly ai",
+				"reference point",
+				"not a prior",
+				"score",
+				"label",
+				"cutoff",
+				"calibrated",
+				"human",
+			} {
+				if !strings.Contains(lower, required) {
+					t.Errorf("baseline.Detail missing %q: %q", required, detail)
+				}
+			}
+
+			trimmed := strings.TrimRight(detail, ".!?")
+			sentenceBreaks := strings.Count(trimmed, ". ") + strings.Count(trimmed, "! ") + strings.Count(trimmed, "? ")
+			if detail == "" || sentenceBreaks > 1 || len(detail) > 260 {
+				t.Errorf("baseline.Detail should be 1-2 short sentences (got %d sentences, %d chars): %q", sentenceBreaks+1, len(detail), detail)
+			}
+		})
+	}
+}
