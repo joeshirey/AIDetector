@@ -623,7 +623,7 @@ script's docstring has more).
 ```sh
 uv run scorer/server.py --observer mlx-community/Qwen3-8B-Base-bf16 --performer mlx-community/Qwen3-8B-bf16
 export AIDETECTOR_SCORER_URL=http://127.0.0.1:8765
-bin/aidetector fit -lm -kind prose -out "$OUT" corpus/blog corpus/memo corpus/essay   # writes prose.lm.json
+bin/aidetector fit -lm -kind prose -out "$OUT" corpus/blog corpus/memo corpus/essay   # writes prose.lm.json and prose.lm.ngram.json (<kind>.lm.json and <kind>.lm.ngram.json)
 ```
 
 ## Layout

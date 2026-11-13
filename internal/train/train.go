@@ -208,6 +208,7 @@ func FitWith(ctx context.Context, kind detect.Kind, dirs []string, outDir string
 		ModelPath: filepath.Join(outDir, string(kind)+".json"), NgramPath: filepath.Join(outDir, string(kind)+".ngram.json")}
 	if withLM {
 		res.ModelPath = filepath.Join(outDir, string(kind)+".lm.json")
+		res.NgramPath = filepath.Join(outDir, string(kind)+".lm.ngram.json")
 	}
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
 		return nil, err

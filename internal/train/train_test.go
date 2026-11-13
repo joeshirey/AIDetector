@@ -1,15 +1,21 @@
 package train_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/joeshirey/AIDetector/internal/calibrate"
 	"github.com/joeshirey/AIDetector/internal/detect"
+	"github.com/joeshirey/AIDetector/internal/detect/ngram"
 	"github.com/joeshirey/AIDetector/internal/engine"
 	"github.com/joeshirey/AIDetector/internal/split"
 	"github.com/joeshirey/AIDetector/internal/train"
@@ -159,5 +165,184 @@ func TestFitWithWeightingAndThresholdsEndToEnd(t *testing.T) {
 	}
 	if tr.Segment == nil || tr.Segment.CalibratedOn < 4 || tr.SegChecked < 4 {
 		t.Errorf("Segment ThresholdReport = (%+v, checked=%d), want >=4 calib and >=4 check segments", tr.Segment, tr.SegChecked)
+	}
+}
+
+func startFakeScorer(t *testing.T) *httptest.Server {
+	t.Helper()
+	const modelID = "fake-observer+fake-performer"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"model":      modelID,
+				"max_tokens": 512,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/score":
+			var req struct {
+				Texts []string `json:"texts"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+				return
+			}
+			results := make([]map[string]any, len(req.Texts))
+			for i, txt := range req.Texts {
+				logPPL, xPPL, bino, curv := 2.85, 3.05, 0.934, 0.32
+				if strings.Contains(txt, "telemetry") || strings.Contains(txt, "comprehensive") {
+					logPPL, xPPL, bino, curv = 1.42, 2.12, 0.670, 2.88
+				}
+				results[i] = map[string]any{
+					"tokens":     64,
+					"log_ppl":    logPPL,
+					"x_ppl":      xPPL,
+					"binoculars": bino,
+					"curvature":  curv,
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"model":   modelID,
+				"results": results,
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "not found"})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// AC1 + AC4: With WithLM: true, FitWith writes <kind>.lm.json and
+// <kind>.lm.ngram.json, sets FitResult.NgramPath accordingly, and leaves any
+// pre-existing <kind>.ngram.json byte-identical. Without WithLM, FitWith writes
+// <kind>.json and <kind>.ngram.json and never writes <kind>.lm.ngram.json.
+func TestFitWithLMNgramIsolation(t *testing.T) {
+	ctx := context.Background()
+	srv := startFakeScorer(t)
+	t.Setenv("AIDETECTOR_SCORER_URL", srv.URL)
+
+	corpusDir := filepath.Join(t.TempDir(), "prose_corpus")
+	trainIDs := []string{"sample-001", "sample-002", "sample-003", "sample-004", "sample-005", "sample-006"}
+	for i, id := range trainIDs {
+		human := fmt.Sprintf(
+			"Yesterday morning I carried the wooden ladder out behind the barn, scraped loose paint off the window frame, and replaced two cracked panes before noon (%d). "+
+				"The putty knife left linseed oil on my sleeves while sparrows nested under the eaves and rain clouds gathered over the ridge. "+
+				"After lunch we stacked split oak by the woodshed, swept the gravel path, and brewed a pot of strong coffee in the kitchen.\n",
+			i,
+		)
+		ai := fmt.Sprintf(
+			"Modern cloud platforms leverage comprehensive observability, deterministic orchestration, and automated governance to streamline distributed workloads (%d). "+
+				"Furthermore, standardized deployment pipelines strengthen operational resilience, eliminate configuration drift, and ensure scalable reliability across hybrid clusters. "+
+				"Organizations that align telemetry metrics with architectural guardrails consistently accelerate delivery velocity.\n",
+			i,
+		)
+		writeTrainFile(t, filepath.Join(corpusDir, "human", id+".txt"), human)
+		writeTrainFile(t, filepath.Join(corpusDir, "ai", "claude-sonnet-5-5", id+".txt"), ai)
+	}
+
+	// 1. WithLM: false writes prose.json + prose.ngram.json and does not write prose.lm.json or prose.lm.ngram.json.
+	noLMDir := filepath.Join(t.TempDir(), "no_lm_out")
+	resNoLM, err := train.FitWith(ctx, detect.KindProse, []string{corpusDir}, noLMDir, train.FitOptions{
+		WithLM:        false,
+		SignConstrain: true,
+	})
+	if err != nil {
+		t.Fatalf("FitWith(WithLM: false): %v", err)
+	}
+	wantRegModel := filepath.Join(noLMDir, "prose.json")
+	wantRegNgram := filepath.Join(noLMDir, "prose.ngram.json")
+	if resNoLM.ModelPath != wantRegModel {
+		t.Errorf("WithLM=false ModelPath = %q, want %q", resNoLM.ModelPath, wantRegModel)
+	}
+	if resNoLM.NgramPath != wantRegNgram {
+		t.Errorf("WithLM=false NgramPath = %q, want %q", resNoLM.NgramPath, wantRegNgram)
+	}
+	for _, mustExist := range []string{wantRegModel, wantRegNgram} {
+		if st, err := os.Stat(mustExist); err != nil || st.Size() == 0 {
+			t.Errorf("WithLM=false expected non-empty %s (err=%v)", mustExist, err)
+		}
+	}
+	for _, mustNotExist := range []string{
+		filepath.Join(noLMDir, "prose.lm.json"),
+		filepath.Join(noLMDir, "prose.lm.ngram.json"),
+	} {
+		if _, err := os.Stat(mustNotExist); !os.IsNotExist(err) {
+			t.Errorf("WithLM=false unexpectedly created %s (err=%v)", mustNotExist, err)
+		}
+	}
+
+	// 2. WithLM: true writes prose.lm.json + prose.lm.ngram.json and leaves pre-existing prose.ngram.json byte-identical.
+	lmDir := filepath.Join(t.TempDir(), "lm_out")
+	sentinelNgram := []byte("{\n \"kind\": \"prose\",\n \"bias\": -0.4321,\n \"weights\": {\n  \"sentinel_untouched_term\": -1.75\n }\n}\n")
+	sentinelModel := []byte("{\n \"kind\": \"prose\",\n \"bias\": -0.1111,\n \"features\": [],\n \"missing\": {},\n \"trained_on\": 7\n}\n")
+	preNgramPath := filepath.Join(lmDir, "prose.ngram.json")
+	preModelPath := filepath.Join(lmDir, "prose.json")
+	writeTrainFile(t, preNgramPath, string(sentinelNgram))
+	writeTrainFile(t, preModelPath, string(sentinelModel))
+
+	resLM, err := train.FitWith(ctx, detect.KindProse, []string{corpusDir}, lmDir, train.FitOptions{
+		WithLM:        true,
+		SignConstrain: true,
+	})
+	if err != nil {
+		t.Fatalf("FitWith(WithLM: true): %v", err)
+	}
+
+	wantLMModel := filepath.Join(lmDir, "prose.lm.json")
+	wantLMNgram := filepath.Join(lmDir, "prose.lm.ngram.json")
+	if resLM.ModelPath != wantLMModel {
+		t.Errorf("WithLM=true ModelPath = %q, want %q", resLM.ModelPath, wantLMModel)
+	}
+	if resLM.NgramPath != wantLMNgram {
+		t.Errorf("WithLM=true NgramPath = %q, want %q", resLM.NgramPath, wantLMNgram)
+	}
+
+	lmModelBytes, err := os.ReadFile(wantLMModel)
+	if err != nil {
+		t.Fatalf("expected %s to exist: %v", wantLMModel, err)
+	}
+	var parsedLM calibrate.Model
+	if err := json.Unmarshal(lmModelBytes, &parsedLM); err != nil {
+		t.Fatalf("unmarshal %s: %v", wantLMModel, err)
+	}
+	hasLMFeat := false
+	for _, f := range parsedLM.Features {
+		if strings.HasPrefix(f.Name, "lm_") {
+			hasLMFeat = true
+			break
+		}
+	}
+	if !hasLMFeat {
+		t.Errorf("expected %s to contain lm_* features, got %+v", wantLMModel, parsedLM.Features)
+	}
+
+	lmNgramBytes, err := os.ReadFile(wantLMNgram)
+	if err != nil {
+		t.Errorf("expected %s to exist: %v", wantLMNgram, err)
+	} else {
+		var parsedNgram ngram.Model
+		if err := json.Unmarshal(lmNgramBytes, &parsedNgram); err != nil {
+			t.Errorf("unmarshal %s: %v", wantLMNgram, err)
+		} else if parsedNgram.Kind != "prose" || len(parsedNgram.Weights) == 0 {
+			t.Errorf("unexpected %s content: Kind=%q len(Weights)=%d", wantLMNgram, parsedNgram.Kind, len(parsedNgram.Weights))
+		}
+	}
+
+	gotPreNgram, err := os.ReadFile(preNgramPath)
+	if err != nil {
+		t.Fatalf("read pre-existing %s: %v", preNgramPath, err)
+	}
+	if !bytes.Equal(gotPreNgram, sentinelNgram) {
+		t.Errorf("WithLM=true modified pre-existing prose.ngram.json:\ngot:  %s\nwant: %s", gotPreNgram, sentinelNgram)
+	}
+	gotPreModel, err := os.ReadFile(preModelPath)
+	if err != nil {
+		t.Fatalf("read pre-existing %s: %v", preModelPath, err)
+	}
+	if !bytes.Equal(gotPreModel, sentinelModel) {
+		t.Errorf("WithLM=true modified pre-existing prose.json:\ngot:  %s\nwant: %s", gotPreModel, sentinelModel)
 	}
 }

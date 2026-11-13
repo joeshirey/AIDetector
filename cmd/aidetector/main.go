@@ -214,7 +214,7 @@ func runFit(args []string) error {
 	fs := flag.NewFlagSet("fit", flag.ExitOnError)
 	kind := fs.String("kind", "", "prose or pr")
 	out := fs.String("out", "", "output directory (required; use a scratch directory, never internal/engine/models)")
-	withLM := fs.Bool("lm", false, "include token-probability features from the local scorer; writes KIND.lm.json")
+	withLM := fs.Bool("lm", false, "include token-probability features from the local scorer; writes KIND.lm.json and KIND.lm.ngram.json")
 	weighting := fs.String("weighting", "source+balance-generator", "sample weighting: \"\", source, or family (optionally with +balance-generator or +balance-family)")
 	signConstrain := fs.Bool("sign-constrain", true, "keep hand-built feature weights on the side their medians point")
 	enableFeatures := fs.String("enable-features", "", "experimental features to include, comma-separated (prose_burstiness, clause_uniformity)")
@@ -475,8 +475,8 @@ func runThresholds(args []string) error {
 	if st, err := os.Stat(modelDir); err == nil && st.IsDir() {
 		for _, name := range []string{
 			"engine.json",
-			"prose.json", "prose.ngram.json", "prose.short.json", "prose.lm.json",
-			"pr.json", "pr.ngram.json", "pr.short.json", "pr.lm.json",
+			"prose.json", "prose.ngram.json", "prose.short.json", "prose.lm.json", "prose.lm.ngram.json",
+			"pr.json", "pr.ngram.json", "pr.short.json", "pr.lm.json", "pr.lm.ngram.json",
 		} {
 			if fi, err := os.Stat(filepath.Join(modelDir, name)); err == nil && !fi.IsDir() {
 				candFiles = append(candFiles, name)

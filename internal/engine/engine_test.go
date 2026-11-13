@@ -2,12 +2,18 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/joeshirey/AIDetector/internal/calibrate"
 	"github.com/joeshirey/AIDetector/internal/detect"
+	"github.com/joeshirey/AIDetector/internal/detect/ngram"
 )
 
 // These fixtures check that each hand-set signal points the right way, so
@@ -549,4 +555,371 @@ func TestBaselineReasonWording(t *testing.T) {
 			}
 		})
 	}
+}
+
+func startFakeScorerServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	const modelID = "fake-observer+fake-performer"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/health":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"model":      modelID,
+				"max_tokens": 512,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/score":
+			var req struct {
+				Texts []string `json:"texts"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error()})
+				return
+			}
+			results := make([]map[string]any, len(req.Texts))
+			for i := range req.Texts {
+				results[i] = map[string]any{
+					"tokens":     64,
+					"log_ppl":    1.65,
+					"x_ppl":      2.20,
+					"binoculars": 0.750,
+					"curvature":  1.85,
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"model":   modelID,
+				"results": results,
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "not found"})
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func writeModelJSON(t *testing.T, dir, name string, v any) {
+	t.Helper()
+	b, err := json.MarshalIndent(v, "", " ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), append(b, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func findSignal(t *testing.T, sigs []detect.Signal, name string) detect.Signal {
+	t.Helper()
+	for _, s := range sigs {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("missing signal %q in %+v", name, sigs)
+	return detect.Signal{}
+}
+
+// AC2 + AC4: FromDir loads <kind>.lm.ngram.json when that kind is scored by
+// <kind>.lm.json (with a reachable scorer), falls back to <kind>.ngram.json
+// when <kind>.lm.ngram.json is absent (legacy experiment dirs), always uses
+// <kind>.ngram.json when the LM model is not used, keeps kinds independent, and
+// hashes only the actually loaded files in BuildInfo().Models.
+func TestFromDirLMNgramIsolationAndFallback(t *testing.T) {
+	ctx := context.Background()
+	srv := startFakeScorerServer(t)
+
+	// >=60-word prose containing "cedar", and >=35-word PR containing "deadlock".
+	const proseSample = "Yesterday afternoon I patched three cedar shingles above the back porch overhang, " +
+		"swept the pine needles out of the copper gutter, and sealed the corner seam before dusk. " +
+		"The old flashing had worked loose during January windstorms, so I replaced two rusted nails, " +
+		"checked the attic rafters with a flashlight when the rain started, and stacked the leftover cedar boards inside the shed."
+	const prSample = "## Summary\n\nFix a deadlock in the worker shutdown path when closing idle connections after context cancellation, " +
+		"and add a deterministic unit test covering concurrent callers waiting on pool drain completion."
+
+	identityThresholds := map[string]Thresholds{
+		"prose":    {Mixed: 40, LikelyAI: 60, AI: 80},
+		"prose.lm": {Mixed: 40, LikelyAI: 60, AI: 80},
+		"pr":       {Mixed: 40, LikelyAI: 60, AI: 80},
+		"pr.lm":    {Mixed: 40, LikelyAI: 60, AI: 80},
+	}
+
+	regularProseCalib := calibrate.Model{
+		Kind: "prose",
+		Bias: 0,
+		Features: []calibrate.Feature{
+			{Name: "word_patterns", Mean: 0, Std: 1, Weight: 1.0, HumanMedian: -2, AIMedian: 2},
+		},
+		Missing: map[string]float64{},
+		Trained: 50,
+	}
+	lmProseCalib := calibrate.Model{
+		Kind: "prose",
+		Bias: 0.25,
+		Features: []calibrate.Feature{
+			{Name: "word_patterns", Mean: 0, Std: 1, Weight: 1.0, HumanMedian: -2, AIMedian: 2},
+			{Name: "lm_binoculars", Mean: 0.90, Std: 0.15, Weight: -0.5, HumanMedian: 0.95, AIMedian: 0.75},
+		},
+		Missing: map[string]float64{},
+		Trained: 50,
+	}
+	regularProseNgram := ngram.Model{
+		Kind:    "prose",
+		Bias:    -4.5,
+		Weights: map[string]float64{"cedar": -8.0},
+	}
+	lmProseNgram := ngram.Model{
+		Kind:    "prose",
+		Bias:    4.5,
+		Weights: map[string]float64{"cedar": 8.0},
+	}
+
+	populateBothProse := func(t *testing.T, regNgram, lmNgram ngram.Model) string {
+		t.Helper()
+		dir := t.TempDir()
+		writeModelJSON(t, dir, "thresholds.json", identityThresholds)
+		writeModelJSON(t, dir, "prose.json", regularProseCalib)
+		writeModelJSON(t, dir, "prose.lm.json", lmProseCalib)
+		writeModelJSON(t, dir, "prose.ngram.json", regNgram)
+		writeModelJSON(t, dir, "prose.lm.ngram.json", lmNgram)
+		return dir
+	}
+
+	t.Run("case1_both_present_with_scorer_uses_lm_ngram_and_hashes_loaded_only", func(t *testing.T) {
+		t.Setenv("AIDETECTOR_SCORER_URL", srv.URL)
+
+		dirBase := populateBothProse(t, regularProseNgram, lmProseNgram)
+		eBase, err := FromDir(dirBase)
+		if err != nil {
+			t.Fatalf("FromDir: %v", err)
+		}
+		res, err := eBase.Analyze(ctx, detect.Input{Text: proseSample, Kind: detect.KindProse})
+		if err != nil {
+			t.Fatalf("Analyze: %v", err)
+		}
+		if res.Scorer != "fake-observer+fake-performer" {
+			t.Errorf("Scorer = %q, want fake-observer+fake-performer", res.Scorer)
+		}
+		wp := findSignal(t, res.Signals, "word_patterns")
+		if wp.Value <= 4.0 || !strings.Contains(wp.Detail, `AI-leaning: "cedar"`) {
+			t.Errorf("expected prose.lm.ngram.json to score word_patterns > 4 with AI-leaning \"cedar\", got Value=%.3f Detail=%q", wp.Value, wp.Detail)
+		}
+		if res.Score < 95 || res.Label != "AI" {
+			t.Errorf("expected high AI score from prose.lm.json + prose.lm.ngram.json, got Score=%d Label=%q", res.Score, res.Label)
+		}
+
+		// Mutating loaded prose.lm.ngram.json must change BuildInfo().Models.
+		mutatedLMNgram := ngram.Model{Kind: "prose", Bias: 5.25, Weights: map[string]float64{"cedar": 9.5}}
+		dirMutLM := populateBothProse(t, regularProseNgram, mutatedLMNgram)
+		eMutLM, err := FromDir(dirMutLM)
+		if err != nil {
+			t.Fatalf("FromDir(mutated lm.ngram): %v", err)
+		}
+		if eMutLM.BuildInfo().Models == eBase.BuildInfo().Models {
+			t.Errorf("BuildInfo().Models did not change when loaded prose.lm.ngram.json changed: %q", eBase.BuildInfo().Models)
+		}
+
+		// Mutating unloaded prose.ngram.json must NOT change BuildInfo().Models.
+		mutatedRegNgram := ngram.Model{Kind: "prose", Bias: -9.75, Weights: map[string]float64{"cedar": -15.0}}
+		dirMutReg := populateBothProse(t, mutatedRegNgram, lmProseNgram)
+		eMutReg, err := FromDir(dirMutReg)
+		if err != nil {
+			t.Fatalf("FromDir(mutated unloaded regular ngram): %v", err)
+		}
+		if eMutReg.BuildInfo().Models != eBase.BuildInfo().Models {
+			t.Errorf("BuildInfo().Models changed when unloaded prose.ngram.json changed: got %q, want %q",
+				eMutReg.BuildInfo().Models, eBase.BuildInfo().Models)
+		}
+	})
+
+	t.Run("case2_both_present_without_scorer_uses_regular_ngram_and_hashes_loaded_only", func(t *testing.T) {
+		t.Setenv("AIDETECTOR_SCORER_URL", "")
+
+		dirBase := populateBothProse(t, regularProseNgram, lmProseNgram)
+		eBase, err := FromDir(dirBase)
+		if err != nil {
+			t.Fatalf("FromDir: %v", err)
+		}
+		res, err := eBase.Analyze(ctx, detect.Input{Text: proseSample, Kind: detect.KindProse})
+		if err != nil {
+			t.Fatalf("Analyze: %v", err)
+		}
+		if res.Scorer != "" {
+			t.Errorf("Scorer = %q, want empty without scorer env", res.Scorer)
+		}
+		wp := findSignal(t, res.Signals, "word_patterns")
+		if wp.Value >= -4.0 || !strings.Contains(wp.Detail, `human-leaning: "cedar"`) {
+			t.Errorf("expected prose.ngram.json to score word_patterns < -4 with human-leaning \"cedar\", got Value=%.3f Detail=%q", wp.Value, wp.Detail)
+		}
+		if res.Score > 5 || res.Label != "human" {
+			t.Errorf("expected low human score from prose.json + prose.ngram.json, got Score=%d Label=%q", res.Score, res.Label)
+		}
+
+		// Mutating unloaded prose.lm.ngram.json must NOT change BuildInfo().Models.
+		mutatedLMNgram := ngram.Model{Kind: "prose", Bias: 7.5, Weights: map[string]float64{"cedar": 12.0}}
+		dirMutLM := populateBothProse(t, regularProseNgram, mutatedLMNgram)
+		eMutLM, err := FromDir(dirMutLM)
+		if err != nil {
+			t.Fatalf("FromDir(mutated unloaded lm.ngram): %v", err)
+		}
+		if eMutLM.BuildInfo().Models != eBase.BuildInfo().Models {
+			t.Errorf("BuildInfo().Models changed when unloaded prose.lm.ngram.json changed: got %q, want %q",
+				eMutLM.BuildInfo().Models, eBase.BuildInfo().Models)
+		}
+
+		// Mutating loaded prose.ngram.json MUST change BuildInfo().Models.
+		mutatedRegNgram := ngram.Model{Kind: "prose", Bias: -6.25, Weights: map[string]float64{"cedar": -11.0}}
+		dirMutReg := populateBothProse(t, mutatedRegNgram, lmProseNgram)
+		eMutReg, err := FromDir(dirMutReg)
+		if err != nil {
+			t.Fatalf("FromDir(mutated regular ngram): %v", err)
+		}
+		if eMutReg.BuildInfo().Models == eBase.BuildInfo().Models {
+			t.Errorf("BuildInfo().Models did not change when loaded prose.ngram.json changed: %q", eBase.BuildInfo().Models)
+		}
+	})
+
+	t.Run("case3_legacy_lm_dir_without_lm_ngram_falls_back_to_regular_ngram", func(t *testing.T) {
+		t.Setenv("AIDETECTOR_SCORER_URL", srv.URL)
+
+		dirLegacy := t.TempDir()
+		writeModelJSON(t, dirLegacy, "thresholds.json", identityThresholds)
+		writeModelJSON(t, dirLegacy, "prose.json", regularProseCalib)
+		writeModelJSON(t, dirLegacy, "prose.lm.json", lmProseCalib)
+		writeModelJSON(t, dirLegacy, "prose.ngram.json", regularProseNgram)
+
+		eLegacy, err := FromDir(dirLegacy)
+		if err != nil {
+			t.Fatalf("FromDir(legacy): %v", err)
+		}
+		res, err := eLegacy.Analyze(ctx, detect.Input{Text: proseSample, Kind: detect.KindProse})
+		if err != nil {
+			t.Fatalf("Analyze(legacy): %v", err)
+		}
+		if res.Scorer != "fake-observer+fake-performer" {
+			t.Errorf("Scorer = %q, want fake-observer+fake-performer", res.Scorer)
+		}
+		wp := findSignal(t, res.Signals, "word_patterns")
+		if wp.Value >= -4.0 || !strings.Contains(wp.Detail, `human-leaning: "cedar"`) {
+			t.Errorf("legacy dir without prose.lm.ngram.json should fall back to prose.ngram.json, got Value=%.3f Detail=%q", wp.Value, wp.Detail)
+		}
+		sawBinoReason := false
+		for _, r := range res.Reasons {
+			if r.Signal == "lm_binoculars" {
+				sawBinoReason = true
+				break
+			}
+		}
+		if !sawBinoReason {
+			t.Errorf("expected prose.lm.json lm_binoculars reason in legacy LM dir, got Reasons=%+v", res.Reasons)
+		}
+
+		// Both prose.lm.json and fallback prose.ngram.json are loaded and reflected in BuildInfo().Models.
+		dirLegacyMutNgram := t.TempDir()
+		writeModelJSON(t, dirLegacyMutNgram, "thresholds.json", identityThresholds)
+		writeModelJSON(t, dirLegacyMutNgram, "prose.json", regularProseCalib)
+		writeModelJSON(t, dirLegacyMutNgram, "prose.lm.json", lmProseCalib)
+		writeModelJSON(t, dirLegacyMutNgram, "prose.ngram.json", ngram.Model{Kind: "prose", Bias: -5.5, Weights: map[string]float64{"cedar": -9.0}})
+		eLegacyMutNgram, err := FromDir(dirLegacyMutNgram)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if eLegacyMutNgram.BuildInfo().Models == eLegacy.BuildInfo().Models {
+			t.Errorf("BuildInfo().Models did not include fallback prose.ngram.json: %q", eLegacy.BuildInfo().Models)
+		}
+
+		dirLegacyMutLM := t.TempDir()
+		writeModelJSON(t, dirLegacyMutLM, "thresholds.json", identityThresholds)
+		writeModelJSON(t, dirLegacyMutLM, "prose.json", regularProseCalib)
+		mutLMCalib := lmProseCalib
+		mutLMCalib.Bias = 0.55
+		writeModelJSON(t, dirLegacyMutLM, "prose.lm.json", mutLMCalib)
+		writeModelJSON(t, dirLegacyMutLM, "prose.ngram.json", regularProseNgram)
+		eLegacyMutLM, err := FromDir(dirLegacyMutLM)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if eLegacyMutLM.BuildInfo().Models == eLegacy.BuildInfo().Models {
+			t.Errorf("BuildInfo().Models did not include prose.lm.json: %q", eLegacy.BuildInfo().Models)
+		}
+	})
+
+	t.Run("case4_per_kind_independence_prose_lm_while_pr_has_no_lm_json", func(t *testing.T) {
+		t.Setenv("AIDETECTOR_SCORER_URL", srv.URL)
+
+		regularPRCalib := calibrate.Model{
+			Kind: "pr",
+			Bias: 0,
+			Features: []calibrate.Feature{
+				{Name: "word_patterns", Mean: 0, Std: 1, Weight: 1.0, HumanMedian: -2, AIMedian: 2},
+			},
+			Missing: map[string]float64{},
+			Trained: 40,
+		}
+		regularPRNgram := ngram.Model{
+			Kind:    "pr",
+			Bias:    -4.5,
+			Weights: map[string]float64{"deadlock": -8.0},
+		}
+		orphanPRLMNgram := ngram.Model{
+			Kind:    "pr",
+			Bias:    4.5,
+			Weights: map[string]float64{"deadlock": 8.0},
+		}
+
+		dirMixed := populateBothProse(t, regularProseNgram, lmProseNgram)
+		writeModelJSON(t, dirMixed, "pr.json", regularPRCalib)
+		writeModelJSON(t, dirMixed, "pr.ngram.json", regularPRNgram)
+
+		eMixed, err := FromDir(dirMixed)
+		if err != nil {
+			t.Fatalf("FromDir(mixed): %v", err)
+		}
+
+		resProse, err := eMixed.Analyze(ctx, detect.Input{Text: proseSample, Kind: detect.KindProse})
+		if err != nil {
+			t.Fatalf("Analyze(prose): %v", err)
+		}
+		wpProse := findSignal(t, resProse.Signals, "word_patterns")
+		if wpProse.Value <= 4.0 || resProse.Score < 95 || eMixed.ThresholdKey(detect.KindProse) != "prose.lm" {
+			t.Errorf("prose should use prose.lm.json + prose.lm.ngram.json: wp=%.3f Score=%d key=%q",
+				wpProse.Value, resProse.Score, eMixed.ThresholdKey(detect.KindProse))
+		}
+
+		resPR, err := eMixed.Analyze(ctx, detect.Input{Text: prSample, Kind: detect.KindPR})
+		if err != nil {
+			t.Fatalf("Analyze(pr): %v", err)
+		}
+		wpPR := findSignal(t, resPR.Signals, "word_patterns")
+		if wpPR.Value >= -4.0 || resPR.Score > 5 || eMixed.ThresholdKey(detect.KindPR) != "pr" {
+			t.Errorf("pr without pr.lm.json should use pr.json + pr.ngram.json: wp=%.3f Score=%d key=%q",
+				wpPR.Value, resPR.Score, eMixed.ThresholdKey(detect.KindPR))
+		}
+
+		// Even if an unused pr.lm.ngram.json sits in the directory without pr.lm.json, PR must still use pr.ngram.json and ignore pr.lm.ngram.json.
+		dirWithOrphan := populateBothProse(t, regularProseNgram, lmProseNgram)
+		writeModelJSON(t, dirWithOrphan, "pr.json", regularPRCalib)
+		writeModelJSON(t, dirWithOrphan, "pr.ngram.json", regularPRNgram)
+		writeModelJSON(t, dirWithOrphan, "pr.lm.ngram.json", orphanPRLMNgram)
+
+		eOrphan, err := FromDir(dirWithOrphan)
+		if err != nil {
+			t.Fatalf("FromDir(orphan pr.lm.ngram.json): %v", err)
+		}
+		resPROrphan, err := eOrphan.Analyze(ctx, detect.Input{Text: prSample, Kind: detect.KindPR})
+		if err != nil {
+			t.Fatalf("Analyze(pr orphan): %v", err)
+		}
+		wpPROrphan := findSignal(t, resPROrphan.Signals, "word_patterns")
+		if wpPROrphan.Value >= -4.0 || resPROrphan.Score > 5 {
+			t.Errorf("pr without pr.lm.json must ignore pr.lm.ngram.json and use pr.ngram.json: wp=%.3f Score=%d",
+				wpPROrphan.Value, resPROrphan.Score)
+		}
+		if eOrphan.BuildInfo().Models != eMixed.BuildInfo().Models {
+			t.Errorf("unloaded pr.lm.ngram.json (when pr.lm.json is absent) changed BuildInfo().Models: got %q, want %q",
+				eOrphan.BuildInfo().Models, eMixed.BuildInfo().Models)
+		}
+	})
 }
